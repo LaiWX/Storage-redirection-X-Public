@@ -34,7 +34,7 @@ const DiagnosticPollDoneMarkerText = "__SRX_DONE__";
 const DiagnosticPollProgressMarkerText = "__SRX_PROGRESS__";
 const DiagnosticPollDoneMarker = "'" + DiagnosticPollDoneMarkerText + "'";
 const DiagnosticPollProgressMarker = "'" + DiagnosticPollProgressMarkerText + "'";
-const DEFAULT_RELEASE_REPOSITORY = "z1298808165/Storage-redirection-X-Public";
+const DEFAULT_RELEASE_REPOSITORY = "LaiWX/Storage-redirection-X-Public";
 const DEFAULT_OFFICIAL_RELEASE_REPOSITORY = "Kindness-Kismet/Storage-redirection-X-Public";
 const DEFAULT_RELEASE_BRANCH = "SRX-R";
 const UPDATE_MANIFEST_URL =
@@ -42,7 +42,7 @@ const UPDATE_MANIFEST_URL =
   DEFAULT_RELEASE_REPOSITORY +
   "/" +
   DEFAULT_RELEASE_BRANCH +
-  "/update.json";
+  "/fork-update.json";
 
 function updateManifestUrls(manifestUrl) {
   const urls = [manifestUrl];
@@ -55,7 +55,7 @@ function updateManifestUrls(manifestUrl) {
       !parsed.search &&
       !parsed.hash &&
       segments.length === 4 &&
-      segments[3] === "update.json"
+      ["update.json", "fork-update.json"].includes(segments[3])
     ) {
       urls.push(
         "https://cdn.jsdelivr.net/gh/" +

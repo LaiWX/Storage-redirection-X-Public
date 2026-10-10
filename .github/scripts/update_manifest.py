@@ -53,6 +53,7 @@ def main() -> None:
     parser.add_argument("--repository", required=True, help="GitHub repository in owner/repo form")
     parser.add_argument("--channel", required=True, choices=("stable", "beta"), help="release channel to update")
     parser.add_argument("--version", required=True, help="semantic version without leading v")
+    parser.add_argument("--version-code", type=int, help="downstream APK/module installation code")
     parser.add_argument("--tag", required=True, help="GitHub release tag")
     parser.add_argument("--title", default="", help="release title")
     parser.add_argument("--release-url", default="", help="override release page URL")
@@ -78,6 +79,20 @@ def main() -> None:
         entry["downloadUrl"] = asset_url(args.repository, args.tag, args.apk_asset)
     if args.module_asset:
         entry["moduleUrl"] = asset_url(args.repository, args.tag, args.module_asset)
+    if args.version_code is not None:
+        if args.version_code < 2000000 or not args.module_asset:
+            raise ValueError("Fork module updates require a valid installation code and ZIP asset")
+        entry["versionCode"] = args.version_code
+        # 模块管理器读取顶层字段，App/WebUI 按频道读取清单。
+        from resolve_fork_version import compare_versions
+        current = manifest.get("version", "").removeprefix("v")
+        if not current or compare_versions(args.version, current) >= 0:
+            manifest.update({
+                "version": "v" + args.version,
+                "versionCode": args.version_code,
+                "zipUrl": entry["moduleUrl"],
+                "changelog": asset_url(args.repository, args.tag, "CHANGELOG.md"),
+            })
     if args.release_notes_file:
         notes_path = Path(args.release_notes_file)
         notes = sanitize_release_notes(notes_path.read_text(encoding="utf-8"))

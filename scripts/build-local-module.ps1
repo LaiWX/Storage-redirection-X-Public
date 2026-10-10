@@ -11,7 +11,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$BuildVersionBaselinePath = Join-Path $RepoRoot ".github\build-version-baseline.json"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 function Get-GradleProperty {
     param(
@@ -101,13 +100,13 @@ function Get-LatestChildDirectory {
         return $null
     }
 
-    $dirs = Get-ChildItem -LiteralPath $Path -Directory | Sort-Object {
+    $dirs = @(Get-ChildItem -LiteralPath $Path -Directory | Sort-Object {
         try {
             [version]$_.Name
         } catch {
             [version]"0.0.0"
         }
-    } -Descending
+    } -Descending)
 
     if ($dirs.Count -eq 0) {
         return $null
@@ -192,122 +191,11 @@ function Initialize-AndroidEnvironment {
     }
 }
 
-function Get-CargoPackageVersion {
-    $cargoToml = Join-Path $RepoRoot "Cargo.toml"
-    $line = Get-Content -LiteralPath $cargoToml | Where-Object { $_ -match '^\s*version\s*=\s*"([^"]+)"' } | Select-Object -First 1
-    if (-not $line -or $line -notmatch '^\s*version\s*=\s*"([^"]+)"') {
-        Fail "无法从 Cargo.toml 读取包版本"
-    }
-
-    return $Matches[1]
-}
-
-function Invoke-GitText {
-    param(
-        [string[]]$Arguments,
-        [switch]$AllowFailure
-    )
-
-    $output = & git @Arguments 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        if ($AllowFailure) {
-            return $null
-        }
-        Fail "git 命令执行失败: git $($Arguments -join ' ')"
-    }
-
-    return ($output -join "`n").Trim()
-}
-
-function Test-WorktreeDirty {
-    $status = Invoke-GitText -Arguments @("status", "--porcelain") -AllowFailure
-    return -not [string]::IsNullOrWhiteSpace($status)
-}
-
-function Get-PublishedManifestBuildCount {
-    param([string]$BaseVersion)
-
-    $manifestPath = Join-Path $RepoRoot "update.json"
-    if (-not (Test-Path -LiteralPath $manifestPath)) {
-        return $null
-    }
-
-    try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    } catch {
-        return $null
-    }
-
-    $version = $manifest.beta.version
-    if ([string]::IsNullOrWhiteSpace($version)) {
-        return $null
-    }
-    $pattern = "^" + [regex]::Escape($BaseVersion) + "-ci\.(\d+)$"
-    if ($version -match $pattern) {
-        return [int]$Matches[1]
-    }
-
-    return $null
-}
-
-function Get-BuildCountBaseline {
-    param([string]$BaseVersion)
-
-    if (-not (Test-Path -LiteralPath $BuildVersionBaselinePath)) {
-        return $null
-    }
-
-    try {
-        $baseline = Get-Content -LiteralPath $BuildVersionBaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($null -eq $baseline.buildCounts) {
-            return $null
-        }
-        $property = $baseline.buildCounts.PSObject.Properties[$BaseVersion]
-        if ($null -eq $property) {
-            return $null
-        }
-        return [int]$property.Value
-    } catch {
-        return $null
-    }
-}
-
 function Resolve-LocalVersion {
-    param([string]$BaseVersion)
-
-    $parts = $BaseVersion.Split(".")
-    if ($parts.Count -ne 3) {
-        Fail "Cargo.toml 的版本格式必须为 MAJOR.MINOR.PATCH，当前为: $BaseVersion"
-    }
-
-    $major = [int]$parts[0]
-    $minor = [int]$parts[1]
-    $patch = [int]$parts[2]
-    $baseCode = ($major * 1000000) + ($minor * 10000) + ($patch * 100)
-
-    # 序号按构建次数递增，与提交数量无关：以基线与已发布清单中记录的最高 N 为准加 1。
-    # 工作区干净说明当前提交对应的构建已经产出，直接复用记录中的最高序号，
-    # 避免仅重新打包就推进版本；有未提交改动时才算作新构建。
-    $highest = 0
-    foreach ($recorded in @(
-        (Get-BuildCountBaseline -BaseVersion $BaseVersion),
-        (Get-PublishedManifestBuildCount -BaseVersion $BaseVersion)
-    )) {
-        if ($null -ne $recorded -and $recorded -gt $highest) {
-            $highest = $recorded
-        }
-    }
-
-    if (-not (Test-WorktreeDirty) -and $highest -gt 0) {
-        $buildCount = $highest
-    } else {
-        $buildCount = $highest + 1
-    }
-    $resolvedVersionCode = $baseCode - 100 + [Math]::Min($buildCount, 99)
-    return @{
-        Version = "$BaseVersion-ci.$buildCount"
-        VersionCode = $resolvedVersionCode
-    }
+    $json = & python (Join-Path $RepoRoot ".github/scripts/resolve_fork_version.py") --format json
+    if ($LASTEXITCODE -ne 0) { Fail "Cannot resolve fork version" }
+    $resolved = ($json -join "`n") | ConvertFrom-Json
+    return @{ Version = $resolved.version; VersionCode = [int]$resolved.version_code }
 }
 
 function Assert-UnderPath {
@@ -407,7 +295,8 @@ function Build-ModuleZip {
         "versionCode=$ModuleVersionCode",
         "author=Kindness-Kismet",
         "description=Storage Redirect X Core Module",
-        "webui=1"
+        "webui=1",
+        "updateJson=https://raw.githubusercontent.com/LaiWX/Storage-redirection-X-Public/SRX-R/fork-update.json"
     ) -join "`n"
     Write-Utf8LfFile -Path (Join-Path $PackageDir "module.prop") -Content ($moduleProp + "`n")
 
@@ -617,8 +506,10 @@ Push-Location $RepoRoot
 try {
     $buildEnvironment = Initialize-AndroidEnvironment
 
-    $baseVersion = Get-CargoPackageVersion
-    $resolved = Resolve-LocalVersion -BaseVersion $baseVersion
+    $resolved = Resolve-LocalVersion
+    if (($Version -and $Version -ne $resolved.Version) -or ($VersionCode -ne 0 -and $VersionCode -ne $resolved.VersionCode)) {
+        Fail "Version arguments must match fork-version.properties and release state"
+    }
     if ([string]::IsNullOrWhiteSpace($Version)) {
         $Version = $resolved.Version
     }

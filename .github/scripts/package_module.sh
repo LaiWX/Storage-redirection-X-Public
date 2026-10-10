@@ -42,7 +42,7 @@ build_module_dir() {
   [[ -f "$module_dir/bin/srxctl" ]] && chmod 755 "$module_dir/bin/srxctl"
   [[ -f "$module_dir/bin/list_apps.dex" ]] && chmod 644 "$module_dir/bin/list_apps.dex"
 
-  printf 'id=storage.redirect.x\nname=Storage Redirect X\nversion=v%s\nversionCode=%s\nauthor=Kindness-Kismet\ndescription=Storage Redirect X Core Module\nwebui=1\n' \
+  printf 'id=storage.redirect.x\nname=Storage Redirect X\nversion=v%s\nversionCode=%s\nauthor=Kindness-Kismet\ndescription=Storage Redirect X Core Module\nwebui=1\nupdateJson=https://raw.githubusercontent.com/LaiWX/Storage-redirection-X-Public/SRX-R/fork-update.json\n' \
     "$VERSION" "$VERSION_CODE" > "$module_dir/module.prop"
 
   (

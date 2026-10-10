@@ -10,11 +10,14 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from resolve_fork_version import BASE, FORK_VERSION, compare_versions
+
 MAX_SECTION_ITEMS = 20
 COMPONENTS = ("module", "app", "other")
 COMPONENT_PRIORITY = {"module": 0, "app": 1, "other": 2}
 SECTIONS = ("fixed", "features", "changes", "usage", "notes")
 AUTO_MANIFEST_PREFIXES = (
+    "Fork release:",
     "CI：更新更新清单",
     "发布：更新更新清单",
 )
@@ -81,14 +84,18 @@ def find_previous_ci_ref(current: str) -> str:
 
 
 def select_previous_release_tag(tags: list[str], version: str) -> str:
-    current_version = release_version(f"v{version}")
-    candidates = [
-        (parsed, tag)
-        for tag in tags
-        if (parsed := release_version(tag)) is not None
-        and (current_version is None or parsed < current_version)
-    ]
-    return max(candidates, default=((0, 0, 0), ""))[1]
+    previous = ""
+    for tag in tags:
+        if not tag.startswith("v"):
+            continue
+        candidate = tag[1:]
+        if not (re.fullmatch(BASE, candidate) or FORK_VERSION.fullmatch(candidate)):
+            continue
+        if compare_versions(candidate, version) < 0 and (
+            not previous or compare_versions(candidate, previous[1:]) > 0
+        ):
+            previous = tag
+    return previous
 
 
 def find_previous_release_ref(version: str) -> str:

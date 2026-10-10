@@ -38,7 +38,7 @@ function Get-PathKind {
     if ($normalized -match '^\.github/(workflows|actions)/') {
         return "ci"
     }
-    if ($normalized -in @("update.json", ".github/build-version-baseline.json")) {
+    if ($normalized -in @("update.json", ".github/build-version-baseline.json", "fork-update.json", ".github/fork-release-state.json", "fork-version.properties")) {
         return "ci"
     }
     if (

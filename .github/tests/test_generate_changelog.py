@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 SCRIPTS_DIR = Path(__file__).parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 
 def load_script(name: str):
@@ -22,6 +23,16 @@ RELEASE_NOTES = load_script("validate_release_notes")
 
 
 class GenerateChangelogTest(unittest.TestCase):
+    def test_previous_fork_release_uses_numeric_patch_precedence(self) -> None:
+        self.assertEqual(
+            CHANGELOG.select_previous_release_tag(
+                ["v1.2.60-ci.36.patch.2", "v1.2.60-ci.36.patch.10", "v1.2.60-patch.10"],
+                "1.2.60-ci.37.patch.10",
+            ),
+            "v1.2.60-ci.36.patch.10",
+        )
+        self.assertTrue(CHANGELOG.is_auto_manifest_subject("Fork release: 1.2.60-patch.10"))
+
     def test_summary_input_removes_machine_review_trailers(self) -> None:
         text = CHANGELOG.summary_input(
             "修复：隔离 pending 状态",
@@ -114,8 +125,9 @@ class GenerateChangelogTest(unittest.TestCase):
     def test_workflows_consume_commit_descriptions_without_model_calls(self) -> None:
         ci = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         release = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("uses: ./.github/workflows/ci.yml", release)
+        self.assertIn("generate_changelog.py", ci)
         for workflow in (ci, release):
-            self.assertIn("generate_changelog.py", workflow)
             self.assertNotIn("actions/ai-inference", workflow)
             self.assertNotIn("COPILOT_PAT", workflow)
             self.assertNotIn("prompt-output", workflow)

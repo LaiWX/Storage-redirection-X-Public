@@ -12,162 +12,40 @@ plugins {
   alias(libs.plugins.kotlin.serialization)
 }
 
-val cargoVersion =
-    rootProject.file("Cargo.toml").readText().let { content ->
-      Regex("""(?m)^version\s*=\s*"([^"]+)"""").find(content)?.groupValues?.get(1) ?: "0.1.0"
-    }
-
-val autoManifestCommitPrefixes = listOf("CI：更新更新清单", "发布：更新更新清单")
-
-data class ResolvedBuildVersion(
-    val baseVersion: String,
-    val buildCount: Int,
-    val versionName: String,
-    val versionCode: Int,
-)
-
-fun runGit(vararg args: String): String? =
-    runCatching {
-          val output =
-              providers.exec {
-                commandLine("git", *args)
-                workingDir(rootProject.projectDir)
-                isIgnoreExitValue = true
-              }
-          if (output.result.get().exitValue == 0) {
-            output.standardOutput.asText.get().trim()
-          } else {
-            null
-          }
+// 所有构建入口统一使用只读的下游版本解析器。
+val forkVersionOutput =
+    providers
+        .exec {
+          workingDir(rootProject.projectDir)
+          commandLine(
+              if (System.getProperty("os.name").startsWith("Windows")) "python" else "python3",
+              ".github/scripts/resolve_fork_version.py",
+              "--format",
+              "github",
+          )
         }
-        .getOrNull()
+        .standardOutput
+        .asText
+        .get()
+val forkVersion = Properties().apply { load(forkVersionOutput.reader()) }
+val appVersionName = forkVersion.getProperty("version")
+val appVersionCode = forkVersion.getProperty("version_code").toInt()
 
-fun cargoVersionFromText(text: String): String? =
-    Regex("""(?m)^version\s*=\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
-
-fun headCargoVersion(): String? = runGit("show", "HEAD:Cargo.toml")?.let(::cargoVersionFromText)
-
-fun versionStartCommit(version: String): String? {
-  val history =
-      runGit(
-          "log",
-          "--first-parent",
-          "--reverse",
-          "--format=commit:%H",
-          "-p",
-          "--",
-          "Cargo.toml",
-      ) ?: return null
-  var commit: String? = null
-  var start: String? = null
-  var addedCurrentVersion = false
-  var removedCurrentVersion = false
-  fun recordVersionStart() {
-    if (addedCurrentVersion && !removedCurrentVersion) {
-      start = commit
-    }
+for ((key, expected) in
+    listOf("VERSION" to appVersionName, "VERSION_CODE" to appVersionCode.toString())) {
+  val supplied =
+      providers.environmentVariable(key).orNull
+          ?: providers
+              .gradleProperty(if (key == "VERSION") "srx.versionName" else "srx.versionCode")
+              .orNull
+  if (supplied != null && supplied != expected) {
+    throw GradleException("$key=$supplied disagrees with fork resolver ($expected)")
   }
-  for (line in history.lineSequence()) {
-    if (line.startsWith("commit:")) {
-      recordVersionStart()
-      commit = line.removePrefix("commit:").trim()
-      addedCurrentVersion = false
-      removedCurrentVersion = false
-      continue
-    }
-    if (line.startsWith('+') && cargoVersionFromText(line.removePrefix("+")) == version) {
-      addedCurrentVersion = true
-    } else if (line.startsWith('-') && cargoVersionFromText(line.removePrefix("-")) == version) {
-      removedCurrentVersion = true
-    }
-  }
-  recordVersionStart()
-  return start
 }
 
-fun countNonAutoManifestCommits(range: String): Int =
-    runGit("log", "--first-parent", "--format=%s", range)
-        ?.lineSequence()
-        ?.filter { it.isNotBlank() }
-        ?.count { subject -> autoManifestCommitPrefixes.none(subject::startsWith) } ?: 0
-
-fun isWorktreeDirty(): Boolean = !runGit("status", "--porcelain").isNullOrBlank()
-
-fun validateBaseVersion(version: String): List<Int> {
-  val numbers = version.split('.').map { part -> part.toIntOrNull() }
-  if (numbers.size != 3 || numbers.any { it == null }) {
-    throw GradleException("Cargo.toml 版本必须采用 MAJOR.MINOR.PATCH 格式，当前值：$version")
-  }
-  return numbers.map { requireNotNull(it) }
-}
-
-fun baseVersionCode(version: String): Int {
-  val (major, minor, patch) = validateBaseVersion(version)
-  return (major * 1_000_000) + (minor * 10_000) + (patch * 100)
-}
-
-fun ciVersionCode(baseVersion: String, buildCount: Int): Int {
-  if (buildCount < 1) {
-    throw GradleException("CI 构建序号必须为正数，当前值：$buildCount")
-  }
-  return baseVersionCode(baseVersion) - 100 + buildCount.coerceAtMost(99)
-}
-
-fun versionCodeFrom(versionName: String): Int {
-  val baseVersion = versionName.substringBefore('-')
-  val ciBuild = Regex("""-ci\.(\d+)$""").find(versionName)?.groupValues?.get(1)?.toIntOrNull()
-  return if (ciBuild != null) ciVersionCode(baseVersion, ciBuild) else baseVersionCode(baseVersion)
-}
-
-fun resolveBuildVersion(baseVersion: String, includeDirty: Boolean): ResolvedBuildVersion {
-  val headVersion = headCargoVersion()
-  val start = if (headVersion == baseVersion) versionStartCommit(baseVersion) else null
-  var count =
-      if (start == null) {
-        0
-      } else {
-        countNonAutoManifestCommits("$start..HEAD")
-      }
-
-  if (includeDirty && isWorktreeDirty()) {
-    if (headVersion != baseVersion) {
-      count = 0
-    }
-    count += 1
-  }
-
-  val buildCount = count.coerceAtLeast(1)
-  return ResolvedBuildVersion(
-      baseVersion = baseVersion,
-      buildCount = buildCount,
-      versionName = "$baseVersion-ci.$buildCount",
-      versionCode = ciVersionCode(baseVersion, buildCount),
-  )
-}
-
-val configuredAppVersionName =
-    providers.environmentVariable("VERSION").orNull
-        ?: providers.gradleProperty("srx.versionName").orNull
-val configuredAppVersionCode =
-    providers.environmentVariable("VERSION_CODE").orNull
-        ?: providers.gradleProperty("srx.versionCode").orNull
-val isSpotlessOnlyInvocation =
-    gradle.startParameter.taskNames.isNotEmpty() &&
-        gradle.startParameter.taskNames.all { taskName ->
-          taskName.substringAfterLast(':').startsWith("spotless")
-        }
-val defaultBuildVersion by lazy { resolveBuildVersion(cargoVersion, includeDirty = true) }
-val appVersionName =
-    configuredAppVersionName
-        ?: if (isSpotlessOnlyInvocation) cargoVersion else defaultBuildVersion.versionName
-val appVersionCode =
-    configuredAppVersionCode?.toIntOrNull()
-        ?: configuredAppVersionName?.let(::versionCodeFrom)
-        ?: if (isSpotlessOnlyInvocation) baseVersionCode(cargoVersion)
-        else defaultBuildVersion.versionCode
 val appCompileSdk = providers.gradleProperty("srx.compileSdk").orNull?.toIntOrNull() ?: 37
 val appTargetSdk = providers.gradleProperty("srx.targetSdk").orNull?.toIntOrNull() ?: appCompileSdk
-val defaultReleaseRepository = "z1298808165/Storage-redirection-X-Public"
+val defaultReleaseRepository = "LaiWX/Storage-redirection-X-Public"
 val defaultOfficialReleaseRepository = "Kindness-Kismet/Storage-redirection-X-Public"
 val defaultReleaseBranch = "SRX-R"
 
@@ -211,7 +89,7 @@ val releaseBranch =
 val updateManifestUrl =
     (providers.gradleProperty("srx.updateManifestUrl").orNull
             ?: providers.environmentVariable("SRX_UPDATE_MANIFEST_URL").orNull
-            ?: rawGitHubFileUrl(releaseRepository, releaseBranch, "update.json"))
+            ?: rawGitHubFileUrl(releaseRepository, releaseBranch, "fork-update.json"))
         .trim()
 
 fun buildConfigString(value: String): String =

@@ -13,6 +13,40 @@ class UpdateCheckerTest {
   private val checker = UpdateChecker("SRX-Manager/test")
 
   @Test
+  fun forkVersionsKeepSemVerOrder() {
+    val pairs =
+        listOf(
+            "1.2.60-ci.36.patch.0" to "1.2.60-ci.36.patch.1",
+            "1.2.60-ci.36.patch.2" to "1.2.60-ci.36.patch.10",
+            "1.2.60-ci.36.patch.10" to "1.2.60-ci.37.patch.10",
+            "1.2.60-ci.37.patch.10" to "1.2.60-patch.10",
+            "1.2.60-patch.10" to "1.2.61-ci.1.patch.10",
+        )
+    for ((old, new) in pairs) {
+      val channel = if (new.contains("-ci.")) "beta" else "stable"
+      val json = """{"schema":1,"$channel":{"version":"$new","tag":"v$new"}}"""
+      val update = checker.checkManifest(json, "example/repo", old, UpdateChannel.All)
+      requireNotNull(update)
+      assertEquals(new, update.versionName)
+      assertEquals(channel == "beta", update.prerelease)
+      assertNull(checker.checkManifest(json, "example/repo", new, UpdateChannel.All))
+      val older = """{"schema":1,"$channel":{"version":"$old","tag":"v$old"}}"""
+      assertNull(checker.checkManifest(older, "example/repo", new, UpdateChannel.All))
+    }
+  }
+
+  @Test
+  fun forkManifestSupportsMirrorFallback() {
+    assertEquals(
+        listOf(
+            "https://raw.githubusercontent.com/example/repo/SRX-R/fork-update.json",
+            "https://cdn.jsdelivr.net/gh/example/repo@SRX-R/fork-update.json",
+        ),
+        updateManifestUrls("https://raw.githubusercontent.com/example/repo/SRX-R/fork-update.json"),
+    )
+  }
+
+  @Test
   fun stableChannelReadsStableManifestEntry() {
     val update =
         checker.checkManifest(

@@ -1,6 +1,12 @@
 name: CI Build
 
 on:
+  workflow_call:
+    inputs:
+      scenarios:
+        required: false
+        default: ""
+        type: string
   pull_request:
     branches: [SRX-R]
   push:
@@ -15,6 +21,10 @@ on:
         default: ""
         type: string
 
+concurrency:
+  group: fork-release-${{ github.repository }}
+  cancel-in-progress: false
+
 permissions:
   actions: read
   contents: write
@@ -28,7 +38,7 @@ env:
 
 jobs:
   quality:
-    if: github.repository == 'z1298808165/Storage-redirection-X-Public' && (github.event_name != 'push' || (!startsWith(github.event.head_commit.message, 'Releases:') && !startsWith(github.event.head_commit.message, 'CI：更新更新清单') && !startsWith(github.event.head_commit.message, '发布：更新更新清单')))
+    if: github.repository == 'LaiWX/Storage-redirection-X-Public' && (github.ref_type == 'tag' || github.event_name != 'push' || (!startsWith(github.event.head_commit.message, 'Releases:') && !startsWith(github.event.head_commit.message, 'Fork release:') && !startsWith(github.event.head_commit.message, 'CI：更新更新清单') && !startsWith(github.event.head_commit.message, '发布：更新更新清单')))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -63,6 +73,7 @@ jobs:
 
       - name: Run fast repository tests
         run: |
+          python -m pip install PyYAML==6.0.2
           node scripts/verify-webui-structure.js
           node scripts/verify-webui-config-fixtures.js
           cargo test -p native-config-fixtures
@@ -81,14 +92,19 @@ jobs:
           ./scripts/validate-code-quality.ps1 -BaseRef $baseRef -Ref HEAD
 
   prepare:
-    if: github.repository == 'z1298808165/Storage-redirection-X-Public' && (github.event_name != 'push' || (!startsWith(github.event.head_commit.message, 'Releases:') && !startsWith(github.event.head_commit.message, 'CI：更新更新清单') && !startsWith(github.event.head_commit.message, '发布：更新更新清单')))
+    if: github.repository == 'LaiWX/Storage-redirection-X-Public' && (github.ref_type == 'tag' || github.event_name != 'push' || (!startsWith(github.event.head_commit.message, 'Releases:') && !startsWith(github.event.head_commit.message, 'Fork release:') && !startsWith(github.event.head_commit.message, 'CI：更新更新清单') && !startsWith(github.event.head_commit.message, '发布：更新更新清单')))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
       version_code: ${{ steps.version.outputs.version_code }}
       scenarios: ${{ steps.scope.outputs.scenarios }}
-      publish_ci: ${{ steps.scope.outputs.publish_ci }}
+      build_full: ${{ steps.scope.outputs.publish_ci }}
+      publish_ci: ${{ steps.scope.outputs.publish_ci == 'true' && steps.version.outputs.publish == 'true' }}
+      channel: ${{ steps.version.outputs.channel }}
+      upstream_version: ${{ steps.version.outputs.upstream_version }}
+      recover: ${{ steps.version.outputs.recover }}
+      release_state: ${{ steps.version.outputs.release_state }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -97,8 +113,12 @@ jobs:
 
       - name: Prepare CI version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python .github/scripts/validate_ci_transition.py --format github >> "$GITHUB_OUTPUT"
+          TAG_ARGS=()
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then TAG_ARGS=(--tag "$GITHUB_REF_NAME"); fi
+          python .github/scripts/prepare_fork_release.py "${TAG_ARGS[@]}" >> "$GITHUB_OUTPUT"
 
       # 统一确定测试流范围与验证模式：dispatch inputs 或提交信息里的
       # 「单场景 29」/「单场景 29,34」都能收窄范围。解析上移到这里，下游
@@ -122,37 +142,48 @@ jobs:
     needs:
       - quality
       - prepare
-    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '仅验证CI') && needs.prepare.outputs.publish_ci == 'true'
+    if: github.event_name == 'push' && (github.ref_type == 'tag' || !contains(github.event.head_commit.message, '仅验证CI')) && needs.prepare.outputs.publish_ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
-      CI_TAG: ci-build-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_TAG: v${{ needs.prepare.outputs.version }}
     steps:
-      - name: Create draft CI release
+      - name: Require release signing credentials
+        env:
+          KEYSTORE: ${{ secrets.SRX_APP_SIGNING_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.SRX_APP_SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SRX_APP_SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SRX_APP_SIGNING_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+      - name: Create or reuse draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$CI_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "CI Build $VERSION" \
-            --notes "构建与测试进行中。" \
-            --draft \
-            --prerelease \
-            --latest=false
+          if gh release view "$CI_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' > draft-state.txt 2>/dev/null; then
+            test "$(cat draft-state.txt)" = "true"
+          else
+            gh release create "$CI_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Storage Redirect X v$VERSION" --notes "Build and tests in progress." --draft --prerelease --latest=false
+          fi
+          # 草稿重试允许包含新修复，源码记录与 tag 必须一致。
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$CI_TAG" -f sha="$GITHUB_SHA" -F force=true
+          fi
 
   module:
     needs:
       - quality
       - prepare
       - init-ci-release
-    if: always() && needs.quality.result == 'success' && needs.prepare.result == 'success' && (needs.init-ci-release.result == 'success' || needs.init-ci-release.result == 'skipped') && needs.prepare.outputs.publish_ci == 'true'
+    if: always() && needs.quality.result == 'success' && needs.prepare.result == 'success' && (needs.init-ci-release.result == 'success' || needs.init-ci-release.result == 'skipped') && needs.prepare.outputs.build_full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       VERSION_CODE: ${{ needs.prepare.outputs.version_code }}
+      SRX_FORK_RELEASE_STATE: ${{ needs.prepare.outputs.release_state }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -301,10 +332,10 @@ jobs:
           test -f "build/assets/storage.redirect.x-v${VERSION}.zip"
 
       - name: Upload module to draft CI release
-        if: github.event_name == 'push' && !contains(github.event.head_commit.message, '仅验证CI')
+        if: github.event_name == 'push' && (github.ref_type == 'tag' || !contains(github.event.head_commit.message, '仅验证CI')) && needs.prepare.outputs.publish_ci == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          CI_TAG: ci-build-${{ github.run_id }}-${{ github.run_attempt }}
+          CI_TAG: v${{ needs.prepare.outputs.version }}
         run: |
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if [ "$(gh release view "$CI_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true)" = "true" ]; then
@@ -326,12 +357,13 @@ jobs:
       - quality
       - prepare
       - init-ci-release
-    if: always() && needs.quality.result == 'success' && needs.prepare.result == 'success' && (needs.init-ci-release.result == 'success' || needs.init-ci-release.result == 'skipped') && needs.prepare.outputs.publish_ci == 'true'
+    if: always() && needs.quality.result == 'success' && needs.prepare.result == 'success' && (needs.init-ci-release.result == 'success' || needs.init-ci-release.result == 'skipped') && needs.prepare.outputs.build_full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       VERSION_CODE: ${{ needs.prepare.outputs.version_code }}
+      SRX_FORK_RELEASE_STATE: ${{ needs.prepare.outputs.release_state }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -390,14 +422,17 @@ jobs:
             APK="app/build/outputs/apk/release/app-release-unsigned.apk"
           fi
           test -f "$APK"
+          if [ "${{ needs.prepare.outputs.publish_ci }}" = "true" ]; then
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          fi
           mkdir -p build/app
           cp "$APK" "build/app/storage-redirect-x-manager-v${VERSION}.apk"
 
       - name: Upload manager APK to draft CI release
-        if: github.event_name == 'push' && !contains(github.event.head_commit.message, '仅验证CI')
+        if: github.event_name == 'push' && (github.ref_type == 'tag' || !contains(github.event.head_commit.message, '仅验证CI')) && needs.prepare.outputs.publish_ci == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          CI_TAG: ci-build-${{ github.run_id }}-${{ github.run_attempt }}
+          CI_TAG: v${{ needs.prepare.outputs.version }}
         run: |
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if [ "$(gh release view "$CI_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true)" = "true" ]; then
@@ -425,6 +460,7 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       VERSION_CODE: ${{ needs.prepare.outputs.version_code }}
+      SRX_FORK_RELEASE_STATE: ${{ needs.prepare.outputs.release_state }}
       TARGET_TRIPLE: x86_64-linux-android
       MODULE_ABI: x86_64
     steps:
@@ -546,6 +582,7 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       VERSION_CODE: ${{ needs.prepare.outputs.version_code }}
+      SRX_FORK_RELEASE_STATE: ${{ needs.prepare.outputs.release_state }}
       ANDROID_TARGET: google_apis
       ANDROID_ARCH: x86_64
       TARGET_TRIPLE: x86_64-linux-android
@@ -760,7 +797,7 @@ jobs:
           fi
 
   create-ci-release:
-    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '仅验证CI') && needs.prepare.outputs.publish_ci == 'true'
+    if: github.event_name == 'push' && (github.ref_type == 'tag' || !contains(github.event.head_commit.message, '仅验证CI')) && needs.prepare.outputs.publish_ci == 'true'
     needs:
       - prepare
       - init-ci-release
@@ -789,7 +826,7 @@ jobs:
       - name: Verify draft CI release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          CI_TAG: ci-build-${{ github.run_id }}-${{ github.run_attempt }}
+          CI_TAG: v${{ needs.prepare.outputs.version }}
         run: |
           test "$(gh release view "$CI_TAG" \
             --repo "$GITHUB_REPOSITORY" \
@@ -802,20 +839,30 @@ jobs:
           grep -Fx "storage.redirect.x-v${VERSION}.zip" release-assets.txt
           grep -Fx "storage-redirect-x-manager-v${VERSION}.apk" release-assets.txt
 
+      - name: Attach release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRX_FORK_RELEASE_STATE: ${{ needs.prepare.outputs.release_state }}
+        run: |
+          python .github/scripts/resolve_fork_version.py --metadata build/fork-release.json --source-commit "$GITHUB_SHA"
+          printf '\n## Fork release\n\n- Upstream baseline: `%s`\n- Global patch version: `%s`\n- Source commit: `%s`\n- Custom changes: see the change list above and fork commits since the previous release.\n' \
+            '${{ needs.prepare.outputs.upstream_version }}' "$VERSION" "$GITHUB_SHA" >> build/CHANGELOG.md
+          gh release upload "v$VERSION" build/fork-release.json build/CHANGELOG.md --repo "$GITHUB_REPOSITORY" --clobber
+
       - name: Publish CI build release
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="ci-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          TAG="v${VERSION}"
 
           gh release edit "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "CI Build $VERSION" \
+            --title "Storage Redirect X v$VERSION" \
             --notes-file build/CHANGELOG.md \
             --draft=false \
-            --prerelease \
-            --latest=false
+            --prerelease="${{ needs.prepare.outputs.channel == 'beta' }}" \
+            --latest="${{ needs.prepare.outputs.channel == 'stable' }}"
 
           echo "ci_tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -849,17 +896,17 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
-      CI_TAG: ci-build-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_TAG: v${{ needs.prepare.outputs.version }}
       # 只有真正发布时才尝试删除草稿 Release；范围受限（不发布）时跳过。
       PUBLISH_CI: ${{ needs.prepare.outputs.publish_ci }}
     steps:
       - name: 删除失败 CI Release
-        if: env.PUBLISH_CI == 'true' && github.event_name == 'push' && !contains(github.event.head_commit.message, '仅验证CI') && (needs.create-ci-release.result != 'success' || needs.update-manifest.result != 'success')
+        if: env.PUBLISH_CI == 'true' && github.event_name == 'push' && (github.ref_type == 'tag' || !contains(github.event.head_commit.message, '仅验证CI')) && (needs.create-ci-release.result != 'success' || needs.update-manifest.result != 'success')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # 草稿发布可能尚未创建 tag；仅删除草稿，保留已有 tag 作为诊断锚点。
-          if gh release view "$CI_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [ "$(gh release view "$CI_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true)" = "true" ]; then
             gh release delete "$CI_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --yes
@@ -894,7 +941,7 @@ jobs:
           done
 
   update-manifest:
-    if: github.event_name == 'push' && needs.prepare.outputs.publish_ci == 'true'
+    if: always() && github.event_name == 'push' && needs.prepare.result == 'success' && (needs.create-ci-release.result == 'success' || needs.prepare.outputs.recover == 'true')
     needs:
       - prepare
       - create-ci-release
@@ -902,42 +949,23 @@ jobs:
     timeout-minutes: 15
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
-      CI_TAG: ${{ needs.create-ci-release.outputs.ci_tag }}
+      CI_TAG: v${{ needs.prepare.outputs.version }}
     steps:
-      - name: Checkout repository
+      - name: Checkout release bookkeeping branch
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.ref_name }}
+          ref: SRX-R
           fetch-depth: 0
-
-      - name: Update beta manifest entry
+      - name: Record successfully published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p temp
-          gh release view "$CI_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json body \
-            --jq '.body' > temp/build-release-notes.md
-          python .github/scripts/update_manifest.py \
-            --channel beta \
-            --repository "$GITHUB_REPOSITORY" \
-            --version "$VERSION" \
-            --tag "$CI_TAG" \
-            --title "CI Build $VERSION" \
-            --apk-asset "storage-redirect-x-manager-v${VERSION}.apk" \
-            --module-asset "storage.redirect.x-v${VERSION}.zip" \
-            --release-notes-file temp/build-release-notes.md
-          python .github/scripts/resolve_build_version.py --record-version "$VERSION"
-
-      - name: Commit update manifest and build baseline
+          python .github/scripts/finalize_fork_release.py
+      - name: Commit downstream release bookkeeping
         run: |
-          if git diff --quiet -- update.json .github/build-version-baseline.json; then
-            echo "update.json and build-version baseline already up to date"
-            exit 0
-          fi
+          if git diff --quiet -- fork-update.json .github/fork-release-state.json; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add update.json .github/build-version-baseline.json
-          git commit -m "CI：更新更新清单 $VERSION"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git add fork-update.json .github/fork-release-state.json
+          git commit -m "Fork release: $VERSION [skip ci]"
+          git push origin HEAD:SRX-R

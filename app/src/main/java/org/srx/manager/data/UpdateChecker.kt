@@ -231,7 +231,7 @@ internal fun updateManifestUrls(manifestUrl: String): List<String> {
           uri.rawQuery != null ||
           uri.rawFragment != null ||
           segments.size != 4 ||
-          segments.last() != "update.json"
+          segments.last() !in setOf("update.json", "fork-update.json")
   ) {
     return listOf(manifestUrl)
   }

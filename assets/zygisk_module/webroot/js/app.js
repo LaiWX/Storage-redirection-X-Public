@@ -2567,7 +2567,7 @@
     }
     const releaseUrl = Api.getReleaseRepositoryUrl
       ? Api.getReleaseRepositoryUrl()
-      : "https://github.com/z1298808165/Storage-redirection-X-Public";
+      : "https://github.com/LaiWX/Storage-redirection-X-Public";
     const officialUrl = Api.getOfficialReleaseRepositoryUrl
       ? Api.getOfficialReleaseRepositoryUrl()
       : "https://github.com/Kindness-Kismet/Storage-redirection-X-Public";

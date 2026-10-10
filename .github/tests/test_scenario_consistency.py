@@ -68,8 +68,19 @@ def bash_path(path: Path) -> str:
     return Path(os.path.relpath(Path(path), Path.cwd())).as_posix()
 
 
+def workflow_source(path: str) -> str:
+    source = read(path)
+    if path == ".github/workflows/release.yml":
+        caller = yaml.safe_load(source)["jobs"]["release"]
+        assert caller["uses"] == "./.github/workflows/ci.yml"
+        assert caller["secrets"] == "inherit"
+        assert caller["with"]["scenarios"] == "all"
+        source = read(".github/workflows/ci.yml")
+    return source
+
+
 def load_workflow(path: str) -> dict:
-    return yaml.safe_load(read(path))["jobs"]
+    return yaml.safe_load(workflow_source(path))["jobs"]
 
 
 def android17_matrix_entry(jobs: dict) -> dict:
@@ -625,14 +636,9 @@ class ScenarioConsistencyTest(unittest.TestCase):
 
     def test_workflows_run_manifest_scenarios(self) -> None:
         # Release 始终全量：硬编码 SRT_SCENARIOS: "all"，不得被单场景标记收窄。
-        release_values = re.findall(
-            r'SRT_SCENARIOS:\s*"([^"]+)"', read(".github/workflows/release.yml")
-        )
-        self.assertTrue(release_values, ".github/workflows/release.yml")
-        self.assertTrue(
-            all(value == "all" for value in release_values),
-            ".github/workflows/release.yml",
-        )
+        caller = yaml.safe_load(read(".github/workflows/release.yml"))["jobs"]["release"]
+        self.assertEqual("./.github/workflows/ci.yml", caller["uses"])
+        self.assertEqual("all", caller["with"]["scenarios"])
 
         # CI 的范围由 prepare outputs 统一决定，不得在 job 内硬编码全量，
         # 也不得再用 dispatch/commit 标记就地二次解析（避免与 prepare 双源头）。
@@ -657,15 +663,15 @@ class ScenarioConsistencyTest(unittest.TestCase):
         prepare = section(ci, "  prepare:", "  init-ci-release:")
         self.assertIn("parse_scenario_scope.py", prepare)
         self.assertIn("scenarios: ${{ steps.scope.outputs.scenarios }}", prepare)
-        self.assertIn("publish_ci: ${{ steps.scope.outputs.publish_ci }}", prepare)
+        self.assertIn("publish_ci: ${{ steps.scope.outputs.publish_ci == 'true' && steps.version.outputs.publish == 'true' }}", prepare)
 
         # 发布相关 job 在范围受限时整体跳过（publish_ci=false）。
         self.assertIn(
-            "if: github.event_name == 'push' && !contains(github.event.head_commit.message, '仅验证CI') && needs.prepare.outputs.publish_ci == 'true'",
+            "if: github.event_name == 'push' && (github.ref_type == 'tag' || !contains(github.event.head_commit.message, '仅验证CI')) && needs.prepare.outputs.publish_ci == 'true'",
             ci,
         )
         self.assertIn(
-            "if: github.event_name == 'push' && needs.prepare.outputs.publish_ci == 'true'",
+            "needs.create-ci-release.result == 'success' || needs.prepare.outputs.recover == 'true'",
             ci,
         )
 
@@ -991,7 +997,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
 
     def test_workflow_optimizations_preserve_test_flow_gate(self) -> None:
         for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-            source = read(workflow)
+            source = workflow_source(workflow)
             prepare = section(source, "  prepare:", "  init-")
             init_job = section(source, "  init-", "  module:")
             app_job = section(source, "  app:", "  test-flow-build:")
@@ -1087,7 +1093,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
     def test_release_android17_flow_mirrors_matrix_gate(self) -> None:
         # Release 的 Android17 必须并入统一矩阵（与主矩阵同一 job），被
         # Test-flow required gate 一并校验；漏掉任一处都会让 Android17 失败静默放行发布。
-        source = read(".github/workflows/release.yml")
+        source = workflow_source(".github/workflows/release.yml")
         self.assertNotIn("  test-flow-android17:", source)
         jobs = load_workflow(".github/workflows/release.yml")
         entry = android17_matrix_entry(jobs)
@@ -1127,7 +1133,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
         )
         self.assertIn("ADB_ROOT_MODE: ${{ matrix.android.adb_root_mode || '' }}", test_flow)
         self.assertIn("SRT_FRESH_APP_SCENARIOS: ${{ matrix.android.fresh_app_scenarios || '' }}", test_flow)
-        self.assertIn("Download release test-flow runtime", test_flow)
+        self.assertIn("Download test-flow runtime", test_flow)
         self.assertIn("emulator-options: -no-window -gpu swiftshader_indirect", test_flow)
         # 17 不上传诊断 artifact：上传步骤必须以 matrix.android.version != 17 为条件。
         upload_start = test_flow.index("Upload test-flow artifacts")
@@ -1138,7 +1144,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
         self.assertIn("test-flow-shared-fuse-before.txt", test_flow)
         self.assertIn("test-flow-shared-fuse-after.txt", test_flow)
         # 门禁：统一矩阵被校验，不再单列 android17。
-        required = section(source, "  test-flow-required:", "  publish-release:")
+        required = section(source, "  test-flow-required:", "  create-ci-release:")
         self.assertIn("- test-flow", required)
         self.assertIn("needs.test-flow.result", required)
         self.assertNotIn("test-flow-android17", required)
@@ -1175,15 +1181,15 @@ class ScenarioConsistencyTest(unittest.TestCase):
 
     def test_gradle_cache_can_be_written_by_public_builds(self) -> None:
         ci = read(".github/workflows/ci.yml")
-        release = read(".github/workflows/release.yml")
+        release = workflow_source(".github/workflows/release.yml")
         self.assertEqual(3, ci.count("cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}"))
         self.assertEqual(3, release.count("cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}"))
         self.assertEqual(3, ci.count("cache-read-only: ${{ github.event_name == 'pull_request' }}"))
-        self.assertEqual(3, release.count("cache-read-only: false"))
+        self.assertEqual(3, release.count("cache-read-only: ${{ github.event_name == 'pull_request' }}"))
 
     def test_test_flow_reports_are_not_in_runtime_artifacts(self) -> None:
         for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-            source = read(workflow)
+            source = workflow_source(workflow)
             upload_start = source.index("Upload test-flow runtime") if "Upload test-flow runtime" in source else source.index("Upload release test-flow runtime")
             reports_start = source.index("unit test reports", upload_start)
             runtime_upload = source[upload_start:reports_start]
@@ -1202,7 +1208,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
         self.assertIn("policy registered", script)
         self.assertIn("capture_shared_fuse_snapshot_once after || true", script)
         for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-            source = read(workflow)
+            source = workflow_source(workflow)
             self.assertIn("Upload shared FUSE snapshots", source)
             self.assertIn("test-flow-shared-fuse-before.txt", source)
             self.assertIn("test-flow-shared-fuse-after.txt", source)
@@ -1220,7 +1226,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
             "media-health.txt",
         }
         for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-            source = read(workflow)
+            source = workflow_source(workflow)
             build = section(source, "      - name: Build x86_64 module zip and test app", "      - name: Upload")
             test_flow = section(source, "  test-flow:", "  test-flow-required:")
             artifact = test_flow[test_flow.index("          path: |") :]
@@ -1242,7 +1248,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
         # 并占住 draft release 阻塞清理；构建 job 不等 quality 则会在格式或快速检查
         # 失败时白跑约 11 分钟机器时间。
         for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-            parsed = yaml.safe_load(read(workflow))
+            parsed = yaml.safe_load(workflow_source(workflow))
             for name, job in parsed["jobs"].items():
                 self.assertIsNotNone(job.get("timeout-minutes"), f"{workflow}:{name}")
             for name in ("module", "app", "test-flow-build"):
@@ -1259,7 +1265,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
         self.assertIsNotNone(match)
         version = match.group(1).strip()
         for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-            source = read(workflow)
+            source = workflow_source(workflow)
             self.assertEqual(1, source.count(version), workflow)
             self.assertIn('SRX_NDK_VERSION: "%s"' % version, source)
             self.assertIn('"ndk;$SRX_NDK_VERSION"', source)
@@ -1270,7 +1276,7 @@ class ScenarioConsistencyTest(unittest.TestCase):
         # key 含 src/** 会让每次源码改动都生成新缓存条目，只能靠 restore-keys 只读
         # 回退，随后仍写入一份新缓存，导致缓存无界增长并触发仓库级驱逐。
         for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-            source = read(workflow)
+            source = workflow_source(workflow)
             for line in re.findall(r"(?m)^\s*key: .*cargo.*$", source):
                 self.assertNotIn("src/**", line, f"{workflow}: {line.strip()}")
 

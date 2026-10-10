@@ -273,6 +273,43 @@ assertDeepEqual(
     "update-manifest-fallback-order",
   );
 
+  manifestRequests.length = 0;
+  await sandbox.window.Api.fetchUpdateManifest(
+    "https://raw.githubusercontent.com/example/repo/SRX-R/fork-update.json",
+  );
+  assertDeepEqual(
+    manifestRequests,
+    [
+      "https://raw.githubusercontent.com/example/repo/SRX-R/fork-update.json",
+      "https://cdn.jsdelivr.net/gh/example/repo@SRX-R/fork-update.json",
+    ],
+    "fork-manifest-mirror-fallback",
+  );
+  for (const [oldVersion, newVersion] of [
+    ["1.2.60-ci.36.patch.0", "1.2.60-ci.36.patch.1"],
+    ["1.2.60-ci.36.patch.2", "1.2.60-ci.36.patch.10"],
+    ["1.2.60-ci.36.patch.10", "1.2.60-ci.37.patch.10"],
+    ["1.2.60-ci.37.patch.10", "1.2.60-patch.10"],
+    ["1.2.60-patch.10", "1.2.61-ci.1.patch.10"],
+  ]) {
+    const channel = newVersion.includes("-ci.") ? "beta" : "stable";
+    sandbox.window.Api.fetchUpdateManifest = async () => ({
+      schema: 1,
+      [channel]: { version: newVersion, tag: "v" + newVersion },
+    });
+    const update = await sandbox.window.Api.checkForUpdates({
+      currentVersionName: oldVersion,
+      channel: "All",
+    });
+    if (!update || update.versionName !== newVersion)
+      throw new Error("fork patch order: " + newVersion);
+    const duplicate = await sandbox.window.Api.checkForUpdates({
+      currentVersionName: newVersion,
+      channel: "All",
+    });
+    if (duplicate) throw new Error("duplicate patch update");
+  }
+
   sandbox.window.Api.exec = async () =>
     [
       "system_accent1_600=#ff336699",

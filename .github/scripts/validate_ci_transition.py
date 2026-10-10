@@ -14,6 +14,7 @@ import resolve_build_version
 SKIP_CI_PATTERN = re.compile(r"\[(?:skip ci|ci skip|no ci)\]", re.I)
 WORKFLOW_SKIP_PREFIXES = (
     "Releases:",
+    "Fork release:",
     "CI：更新更新清单",
     "发布：更新更新清单",
 )
@@ -64,21 +65,8 @@ def main() -> None:
         print("CI version transition check skipped because the target commit does not trigger CI.")
         return
 
-    base_version = resolve_build_version.read_current_cargo_version()
-    build_count = resolve_build_version.resolve_build_count(base_version, include_dirty=False)
-    stable_version = stable_manifest_version()
-    errors = transition_errors(base_version, stable_version, build_count)
-    if errors:
-        raise SystemExit("CI version transition validation failed:\n- " + "\n- ".join(errors))
-
-    resolved_version = f"{base_version}-ci.{build_count}"
-    resolved_code = resolve_build_version.version_code(base_version, build_count, release=False)
-    data = {
-        "base_version": base_version,
-        "build_count": build_count,
-        "version": resolved_version,
-        "version_code": resolved_code,
-    }
+    import resolve_fork_version
+    data = resolve_fork_version.resolve()
     if args.format == "github":
         for key, value in data.items():
             print(f"{key}={value}")
