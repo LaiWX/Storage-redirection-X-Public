@@ -39,6 +39,7 @@ pub(super) fn handle_single_path_audit<F>(
 where
     F: FnOnce(*const c_char) -> c_int,
 {
+    let original_errno = runtime::current_errno();
     if request.pathname.is_null() {
         return call_original(request.pathname);
     }
@@ -79,6 +80,9 @@ where
         return -1;
     }
     fix_system_writer_private_owner_for_mutation(hub, &path_for_decision);
+    if hub.is_passive_monitor() {
+        runtime::set_errno(original_errno);
+    }
     let result = call_original(request.pathname);
     let current_errno = runtime::current_errno();
     monitor::record_path_operation_result(
@@ -151,6 +155,7 @@ pub(super) fn handle_fd_path_audit<F>(
 where
     F: FnOnce() -> c_int,
 {
+    let original_errno = runtime::current_errno();
     let path_for_decision = path_utils::resolve_dirfd_path(fd);
     if path_for_decision.is_empty()
         || !path_for_decision.starts_with('/')
@@ -171,6 +176,9 @@ where
         return -1;
     }
     fix_system_writer_private_owner_for_mutation(hub, &path_for_decision);
+    if hub.is_passive_monitor() {
+        runtime::set_errno(original_errno);
+    }
     let result = call_original();
     let current_errno = runtime::current_errno();
     monitor::record_path_operation_result(
@@ -236,6 +244,7 @@ pub(super) fn handle_link_audit<F>(
 where
     F: FnOnce(*const c_char, *const c_char) -> c_int,
 {
+    let original_errno = runtime::current_errno();
     if request.oldpath.is_null() || request.newpath.is_null() {
         return call_original(request.oldpath, request.newpath);
     }
@@ -288,6 +297,9 @@ where
         )
     {
         return -1;
+    }
+    if hub.is_passive_monitor() {
+        runtime::set_errno(original_errno);
     }
     let result = call_original(request.oldpath, request.newpath);
     let current_errno = runtime::current_errno();

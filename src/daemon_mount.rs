@@ -443,6 +443,9 @@ pub(crate) fn module_mapped_into(pid: i32) -> Option<bool> {
 /// scoped FUSE 或清理/重建整棵挂载栈。任何身份、端点或挂载源不匹配都返回 false，调用方
 /// 随后继续走完整的清理与回退流程。
 pub(crate) fn try_fast_update_shared_host(request: &MountRequest) -> bool {
+    if request.is_monitor_only {
+        return false;
+    }
     if request.operation != MountOperation::Reload
         || !matches!(
             request.storage_backend_mode,
@@ -511,6 +514,13 @@ fn refresh_mount_state_fingerprint(request: &MountRequest) -> bool {
 }
 
 pub fn execute_mount_request(request: &MountRequest) -> bool {
+    if request.is_monitor_only && request.operation != MountOperation::Disable {
+        log::info!(
+            "daemon mount skip reason=passive_monitor pkg={}",
+            request.package_name
+        );
+        return false;
+    }
     let started_ms = monotonic_ms();
     let initial_state = if request.operation == MountOperation::Disable {
         "disabled"
@@ -813,8 +823,6 @@ fn handle_child_process(request: &MountRequest, plan: &MountForkPlan, sock: c_in
     let preattached_host = preattach_shared_host(request, scoped_fuse_roots);
     let ok = if preattached_host.is_some() {
         true
-    } else if request.is_monitor_only {
-        planner.ensure_mount_namespace_prepared()
     } else if request.is_mapping_mode_only {
         planner.apply_path_mappings_only(
             &request.path_mappings,
@@ -948,12 +956,14 @@ fn preattach_shared_host(
 }
 
 fn shared_host_preattach_candidate(request: &MountRequest, scoped_fuse_roots: &[String]) -> bool {
+    if request.is_monitor_only {
+        return false;
+    }
     let is_auto = matches!(
         request.storage_backend_mode,
         crate::config::StorageBackendMode::Auto
     );
-    let is_monitor_only = request.is_monitor_only && request.is_file_monitor_enabled;
-    if !is_auto && !is_monitor_only {
+    if !is_auto {
         return false;
     }
     let user_id = crate::platform::user_id_from_uid(request.uid);
@@ -1777,10 +1787,13 @@ pub(crate) enum PreRegisterOutcome {
 /// companion 只能看到没有该 uid 的快照并回退 scoped。预登记只写策略，不创建挂载，且
 /// 必须丢弃应用 namespace 专属的 real_root_override，保证宿主看到真实存储根。
 pub(crate) fn pre_register_host_policy(request: &MountRequest) -> PreRegisterOutcome {
+    if request.is_monitor_only {
+        return PreRegisterOutcome::NotApplicable;
+    }
     let wants_shared_host = matches!(
         request.storage_backend_mode,
         crate::config::StorageBackendMode::Auto
-    ) || request.is_monitor_only;
+    );
     if request.operation != MountOperation::Reload
         || !wants_shared_host
         || !crate::fuse_host::wait_for_host_session()

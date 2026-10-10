@@ -166,6 +166,7 @@ fn handle_open_like<F>(
 where
     F: FnMut(*const c_char) -> c_int,
 {
+    let original_errno = runtime::current_errno();
     if pathname.is_null() {
         return call_original(pathname);
     }
@@ -180,6 +181,28 @@ where
     else {
         return call_original(pathname);
     };
+
+    if hub.is_passive_monitor() {
+        let existed_before = std::path::Path::new(&path_for_decision).exists();
+        runtime::set_errno(original_errno);
+        let result = call_original(pathname);
+        let saved_errno = runtime::current_errno();
+        monitor::record_open_result(
+            hub,
+            monitor::OpenResultRecord {
+                op_name,
+                flags,
+                pathname: &path_for_decision,
+                original_pathname: &path_for_decision,
+                is_mapping: false,
+                result,
+                error_no: if result < 0 { saved_errno } else { 0 },
+                existed_before,
+            },
+        );
+        runtime::set_errno(saved_errno);
+        return result;
+    }
 
     retry_fuse_fix_for_media_provider(hub);
     if monitor::has_write_intent_flags(flags)
@@ -286,6 +309,7 @@ fn handle_openat_like<F>(
 where
     F: FnMut(c_int, *const c_char) -> c_int,
 {
+    let original_errno = runtime::current_errno();
     if pathname.is_null() {
         return call_original(dirfd, pathname);
     }
@@ -298,6 +322,28 @@ where
     else {
         return call_original(dirfd, pathname);
     };
+
+    if hub.is_passive_monitor() {
+        let existed_before = std::path::Path::new(&path_for_decision).exists();
+        runtime::set_errno(original_errno);
+        let result = call_original(dirfd, pathname);
+        let saved_errno = runtime::current_errno();
+        monitor::record_open_result(
+            hub,
+            monitor::OpenResultRecord {
+                op_name,
+                flags,
+                pathname: &path_for_decision,
+                original_pathname: &path_for_decision,
+                is_mapping: false,
+                result,
+                error_no: if result < 0 { saved_errno } else { 0 },
+                existed_before,
+            },
+        );
+        runtime::set_errno(saved_errno);
+        return result;
+    }
 
     retry_fuse_fix_for_media_provider(hub);
     if monitor::has_write_intent_flags(flags)

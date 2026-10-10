@@ -209,6 +209,7 @@ fn handle_mkdir_like<F>(
 where
     F: FnOnce(*const c_char) -> c_int,
 {
+    let original_errno = runtime::current_errno();
     if pathname.is_null() {
         return call_original(pathname);
     }
@@ -230,9 +231,12 @@ where
     );
 
     if hub.is_monitor_only() && !should_enforce_monitor_only_writer_policy(hub) {
+        runtime::set_errno(original_errno);
         let result = call_original(pathname);
-        let error_no = runtime::errno_for_result(result);
+        let saved_errno = runtime::current_errno();
+        let error_no = if result < 0 { saved_errno } else { 0 };
         monitor::record_mkdir_result(hub, op_name, path_for_decision.as_ref(), result, error_no);
+        runtime::set_errno(saved_errno);
         return result;
     }
 
@@ -639,6 +643,7 @@ fn handle_unlink_like<F>(
 where
     F: FnOnce(*const c_char) -> c_int,
 {
+    let original_errno = runtime::current_errno();
     if pathname.is_null() {
         return call_original(pathname);
     }
@@ -654,6 +659,7 @@ where
     diagnostic::log_diag_path_event(hub, op_name, "input", path_for_decision.as_ref(), flags);
 
     if !should_apply_mutation_policy(hub) {
+        runtime::set_errno(original_errno);
         let result = call_original(pathname);
         let current_errno = runtime::current_errno();
         monitor::record_unlink_result(

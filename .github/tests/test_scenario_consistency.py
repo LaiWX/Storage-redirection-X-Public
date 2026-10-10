@@ -201,12 +201,12 @@ class ScenarioConsistencyTest(unittest.TestCase):
         self.assertIn("self.resolve_mapping(storage_path).is_some()", decision)
         self.assertIn("self.is_own_private_storage_path(storage_path)", decision)
 
-    def test_monitor_only_heals_cross_owner_sqlite_sidecars(self) -> None:
+    def test_monitor_only_does_not_heal_cross_owner_sqlite_sidecars(self) -> None:
         policy = read("src/fuse_redirect/policy.rs")
         callbacks = read("src/fuse_redirect/callbacks.rs")
         self.assertIn("should_heal_media_sqlite_shm_rel", policy)
-        self.assertIn("is_monitor_only_private_sqlite", policy)
-        self.assertIn("is_android_private_sqlite_relative_path", policy)
+        self.assertNotIn("is_monitor_only_private_sqlite", policy)
+        self.assertNotIn("is_android_private_sqlite_relative_path", policy)
         self.assertIn("policy.should_heal_media_sqlite_shm_rel(&rel)", callbacks)
         self.assertIn("policy.should_heal_media_sqlite_shm_rel(&backend.rel)", callbacks)
 
@@ -261,10 +261,10 @@ class ScenarioConsistencyTest(unittest.TestCase):
                 f"{label} 必须先接入共享宿主再执行 namespace 重定向",
             )
             self.assertIn("preattached_host.is_some()", source)
-            monitor_only = source.index("else if request.is_monitor_only")
-            redirect = source.index("apply_sdcard_redirect(", source.index("preattach_shared_host("))
-            self.assertLess(monitor_only, redirect, label)
-            self.assertIn("ensure_mount_namespace_prepared()", source[monitor_only:redirect], label)
+            self.assertNotIn("else if request.is_monitor_only", source, label)
+            candidate = section(source, "fn shared_host_preattach_candidate(", "\n}")
+            self.assertIn("if request.is_monitor_only", candidate, label)
+            self.assertIn("return false", candidate, label)
 
     def test_companion_requires_current_shared_host_policy(self) -> None:
         companion = read("src/lifecycle/companion_mount.rs")

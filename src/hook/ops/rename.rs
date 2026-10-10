@@ -162,6 +162,7 @@ fn handle_rename_like<F>(
 where
     F: FnOnce(*const c_char, *const c_char) -> c_int,
 {
+    let original_errno = runtime::current_errno();
     if request.oldpath.is_null() || request.newpath.is_null() {
         return call_original(request.oldpath, request.newpath);
     }
@@ -212,6 +213,23 @@ where
         new_resolved.as_ref(),
         request.flags,
     );
+
+    if hub.is_passive_monitor() {
+        runtime::set_errno(original_errno);
+        let result = call_original(request.oldpath, request.newpath);
+        let saved_errno = runtime::current_errno();
+        monitor::record_rename_result(
+            hub,
+            op_name,
+            new_resolved.as_ref(),
+            old_resolved.as_ref(),
+            result,
+            if result < 0 { saved_errno } else { 0 },
+            request.flags,
+        );
+        runtime::set_errno(saved_errno);
+        return result;
+    }
 
     let should_apply_policy = should_apply_rename_policy(hub);
     let mut old_redirect = RedirectDecision {

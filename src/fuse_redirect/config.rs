@@ -146,9 +146,9 @@ pub struct FuseRedirectConfig {
     pub read_only_paths: Vec<String>,
     pub path_mappings: Vec<PathMapping>,
     pub is_mapping_mode_only: bool,
-    /// 是否为未配置重定向应用的监视专用直通会话。
+    /// 兼容旧请求的仅监控标记。
     ///
-    /// 该模式只记录 FUSE 请求，所有路径都落到真实共享存储，不改变应用看到的后端。
+    /// 仅监控保留系统存储视图，此类配置不得创建 FUSE 会话或登记宿主策略。
     pub is_monitor_only: bool,
     /// 是否为共享宿主直通会话。
     ///
@@ -240,9 +240,8 @@ pub fn request_policy_fingerprint<R: MountRequestFields + ?Sized>(request: &R) -
 pub fn scoped_fuse_mount_roots_for_request<R: MountRequestFields + ?Sized>(
     request: &R,
 ) -> Vec<String> {
-    if request.is_monitor_only() && request.is_file_monitor_enabled() {
-        let user_id = crate::platform::user_id_from_uid(request.uid());
-        return vec![paths::storage_user_root_for_user(user_id)];
+    if request.is_monitor_only() {
+        return Vec::new();
     }
 
     if matches!(
@@ -732,6 +731,14 @@ pub fn mount_blocking_with_ready(
     config: FuseRedirectConfig,
     ready_sock: Option<libc::c_int>,
 ) -> bool {
+    if config.is_monitor_only {
+        log::warn!(
+            "fuse session rejected reason=passive_monitor pkg={}",
+            config.package_name
+        );
+        send_ready_result(ready_sock, -1);
+        return false;
+    }
     let app_pid = config.app_pid;
     let Some(app_start_time_ticks) = config.app_start_time_ticks else {
         log::warn!(
@@ -914,6 +921,14 @@ pub fn mount_host_fuse(
     ready_sock: Option<libc::c_int>,
     control_sock: Option<libc::c_int>,
 ) -> bool {
+    if config.is_monitor_only {
+        log::warn!(
+            "fuse host rejected reason=passive_monitor pkg={}",
+            config.package_name
+        );
+        send_ready_result(ready_sock, HOST_READY_POLICY_FAILED);
+        return false;
+    }
     let session_mount_source = host_mount_source(std::process::id());
 
     let mount_uid = if crate::metadata_repair::enabled() {

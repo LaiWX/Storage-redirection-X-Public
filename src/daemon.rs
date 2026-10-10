@@ -909,6 +909,9 @@ fn reconcile_running_apps(
         }
 
         let request = build_request(&proc, config_version, &config_snapshot);
+        if request.is_monitor_only && !has_mount_state(&request) {
+            continue;
+        }
         plans.push(ReconcilePlan::new(
             request,
             mode == ReconcileMode::MissingOnly,
@@ -1058,7 +1061,8 @@ fn reconcile_running_apps(
         // 恢复动作由账本归属与端点健康共同决定：被判定为"不摘除"或"已收敛"的命名空间
         // 不能继续注入，否则就是在死连接上叠加新的挂载层。这里在真正执行前取一次监督结论，
         // 既作为执行门禁，也把判定依据写进日志。
-        if let Some(snapshot) = crate::daemon_mount::supervise_mount_request(&plan.request)
+        if plan.request.operation == MountOperation::Reload
+            && let Some(snapshot) = crate::daemon_mount::supervise_mount_request(&plan.request)
             && !snapshot.last_action.allows_inject()
         {
             if uses_batch_cursor {
@@ -1257,7 +1261,8 @@ fn build_request(
             resolved.is_mapping_mode_only,
         ),
         None if is_monitor_only => (
-            MountOperation::Reload,
+            // 只允许清理曾经的重定向挂载，不能为监控建立新的代理视图。
+            MountOperation::Disable,
             platform::user_id_from_uid(proc.uid),
             platform::paths::storage_user_root_for_user(platform::user_id_from_uid(proc.uid)),
             Vec::new(),
@@ -1294,11 +1299,7 @@ fn build_request(
         read_only_paths,
         is_mapping_mode_only,
         is_monitor_only,
-        storage_backend_mode: if is_monitor_only {
-            crate::config::StorageBackendMode::Fuse
-        } else {
-            snapshot.storage_backend_mode
-        },
+        storage_backend_mode: snapshot.storage_backend_mode,
         is_file_monitor_enabled: snapshot.is_file_monitor_enabled,
         config_version,
         policy_fingerprint: 0,

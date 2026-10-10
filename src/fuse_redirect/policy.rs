@@ -193,6 +193,9 @@ impl SharedPolicyTable {
     /// root 子进程通常继承应用的 mount namespace，但其 FUSE 请求 uid 已变成 0；namespace
     /// 索引只绑定当前应用进程实例，不把 uid 0 全局放行给某个应用。
     pub(crate) fn register(&self, config: FuseRedirectConfig) -> Option<usize> {
+        if config.is_monitor_only {
+            return None;
+        }
         let uid = u32::try_from(config.uid).ok()?;
         let app_pid = config.app_pid;
         let namespace = registered_mount_namespace(&config);
@@ -324,6 +327,9 @@ fn request_mount_namespace(pid: u32) -> Option<NamespaceIdentity> {
 
 impl RedirectPolicy {
     pub(super) fn new(config: FuseRedirectConfig) -> Option<Self> {
+        if config.is_monitor_only {
+            return None;
+        }
         let user_id = config.user_id();
         let storage_root = paths::storage_user_root_for_user(user_id);
         let mount_root = super::config::fuse_mount_point(&config, user_id);
@@ -332,9 +338,9 @@ impl RedirectPolicy {
             .trim_matches('/')
             .to_string();
         let real_root = real_backend_root_for_config(&config, user_id);
-        // 共享宿主直通和未配置应用的监视专用会话都不做任何重定向，`redirect_target`
+        // 共享宿主直通配置不做任何重定向，`redirect_target`
         // 可以是整个存储根。按子路径推导重定向根对"根本身"返回 None，沿用普通流程会
-        // 把这两类合法直通配置误判为非法，导致宿主策略拒绝 UID，应用看不到共享存储。
+        // 把合法直通配置误判为非法，导致宿主策略拒绝 UID，应用看不到共享存储。
         // 两种模式都把重定向根指向真实根：即使某条路径意外走到重定向分支，落点仍是真实
         // 后端，不会凭空多出一层沙盒目录，也不需要创建任何目录。
         let redirect_storage = paths::resolve_user_path(
@@ -349,10 +355,7 @@ impl RedirectPolicy {
             && config.path_mappings.is_empty()
             && config.sandboxed_paths.is_empty()
             && paths::eq_ignore_case(&redirect_storage, &storage_root);
-        let redirect_root_string = if config.is_passthrough_host
-            || config.is_monitor_only
-            || is_mapping_root_passthrough
-        {
+        let redirect_root_string = if config.is_passthrough_host || is_mapping_root_passthrough {
             real_root.to_string_lossy().to_string()
         } else {
             let redirect_root_string =
@@ -566,8 +569,7 @@ impl RedirectPolicy {
 
     fn backend_decision(&self, storage_path: &str, operation: OperationKind) -> BackendDecision {
         let is_read_only = self.is_read_only(storage_path);
-        let kind = if self.is_monitor_only
-            || self.resolve_mapping(storage_path).is_some()
+        let kind = if self.resolve_mapping(storage_path).is_some()
             || self.is_own_private_storage_path(storage_path)
         {
             BackendKind::Real
@@ -727,14 +729,7 @@ impl RedirectPolicy {
     /// 正常现象，`-wal` 过短时 SQLite 自己会按空日志重建，都不需要外部干预。
     pub(super) fn should_heal_media_sqlite_shm_rel(&self, rel: &str) -> bool {
         let is_own_media_sqlite = is_own_media_sqlite_relative_path(rel, &self.package_name);
-        let is_monitor_only_private_sqlite = self.is_monitor_only
-            && is_android_private_sqlite_relative_path(rel)
-            && matches!(
-                self.backend_decision(&self.storage_path_for_rel(rel), OperationKind::Read)
-                    .kind,
-                BackendKind::Real
-            );
-        if !is_own_media_sqlite && !is_monitor_only_private_sqlite {
+        if !is_own_media_sqlite {
             return false;
         }
         let file_name = rel.rsplit('/').next().unwrap_or(rel);
@@ -1427,19 +1422,4 @@ fn is_own_media_sqlite_relative_path(relative: &str, package_name: &str) -> bool
         Some(package) => paths::eq_ignore_case(package, package_name),
         None => false,
     }
-}
-
-/// 判断相对路径是否位于任一应用私有外部存储目录下的 SQLite 文件。
-///
-/// 监视专用会话可能代表应用读取其它应用拥有的数据库；这类跨应用访问不满足
-/// `is_own_media_sqlite_relative_path`，但损坏的 `-shm` 仍必须删除旧 inode 后重建。
-fn is_android_private_sqlite_relative_path(relative: &str) -> bool {
-    if !paths::is_sqlite_database_or_sidecar_path(relative) {
-        return false;
-    }
-    let mut parts = relative.split('/').filter(|part| !part.is_empty());
-    if parts.next() != Some("Android") {
-        return false;
-    }
-    matches!(parts.next(), Some("data" | "media" | "obb")) && parts.next().is_some()
 }

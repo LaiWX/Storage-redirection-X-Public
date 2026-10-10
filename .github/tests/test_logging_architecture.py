@@ -80,25 +80,24 @@ class LoggingArchitectureTest(unittest.TestCase):
         screen = read("app/src/main/java/org/srx/manager/ui/screen/LogsScreen.kt")
         self.assertIn('entry.source == "path_mapping" && entry.identifyMethod == "daemon_inotify"', screen)
 
-    def test_unconfigured_apps_use_monitor_only_passthrough_without_redirecting_writes(self) -> None:
+    def test_unconfigured_apps_use_passive_monitor_without_storage_mounts(self) -> None:
         config = read("src/config.rs")
         self.assertIn("pub fn should_capture_unconfigured_app", config)
         specialize = read("src/lifecycle/specialize_pre.rs")
-        self.assertIn("let is_monitor_only = self.should_monitor && !self.should_redirect;", specialize)
-        self.assertIn("StorageBackendMode::Fuse", specialize)
+        passive = section(specialize, "        if is_monitor_only {", "        let route_config_started_ms")
+        self.assertIn('"monitor_passive"', passive)
+        self.assertIn("self.should_keep_module_loaded = true", passive)
+        self.assertIn("return;", passive)
+        self.assertNotIn("StorageBackendMode::Fuse", specialize)
+        self.assertLess(specialize.index('"monitor_passive"'), specialize.index("mark_planned("))
+        post = read("src/lifecycle/specialize_post.rs")
+        self.assertIn("flow.should_monitor && !flow.should_redirect", post)
         request = read("src/lifecycle/companion_request.rs")
-        self.assertIn("pub is_monitor_only: bool", request)
         self.assertIn('get("monitor_only")', request)
         policy = read("src/fuse_redirect/policy.rs")
-        backend = policy[policy.index("fn backend_decision") : policy.index("fn matches_any")]
-        self.assertLess(backend.index("if self.is_monitor_only"), backend.index("BackendKind::Redirect"))
-        self.assertIn('"fuse_monitor_only"', policy)
-        constructor_start = policy.index("impl RedirectPolicy")
-        constructor = policy[constructor_start : policy.index("        let mut path_mappings", constructor_start)]
-        self.assertIn("config.is_passthrough_host", constructor)
-        self.assertIn("config.is_monitor_only", constructor)
-        self.assertIn("is_mapping_root_passthrough", constructor)
-        self.assertIn("config.is_mapping_mode_only", constructor)
+        constructor = section(policy, "impl RedirectPolicy", "        let user_id = config.user_id();")
+        self.assertIn("if config.is_monitor_only", constructor)
+        self.assertIn("return None", constructor)
         self.assertIn("event_role=request", policy)
 
     def test_monitor_watches_precede_slow_public_owner_scan(self) -> None:

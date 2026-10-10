@@ -218,6 +218,10 @@ impl InterceptHub {
         self.is_monitor_only.load(Ordering::Relaxed)
     }
 
+    pub fn is_passive_monitor(&self) -> bool {
+        self.is_monitor_only() && !self.with_package_name(policy::is_system_writer_package)
+    }
+
     pub fn is_monitor_enabled(&self) -> bool {
         self.is_monitor_enabled.load(Ordering::Relaxed)
     }

@@ -422,6 +422,16 @@ fn handle_ftruncate_fd_audit<F>(
 where
     F: FnOnce() -> c_int,
 {
+    if hub.is_passive_monitor() {
+        return handle_fd_path_audit(
+            hub,
+            OpKind::Truncate,
+            op_name,
+            fd,
+            Some(format!("length={}", length)),
+            call_original,
+        );
+    }
     let path_for_decision = path_utils::resolve_dirfd_path(fd);
     if path_for_decision.is_empty()
         || !path_for_decision.starts_with('/')
@@ -483,6 +493,9 @@ fn handle_futimens_fd_audit<F>(
 where
     F: FnOnce() -> c_int,
 {
+    if hub.is_passive_monitor() {
+        return handle_fd_path_audit(hub, OpKind::Utimens, op_name, fd, None, call_original);
+    }
     let path_for_decision = path_utils::resolve_dirfd_path(fd);
     if path_for_decision.is_empty()
         || !path_for_decision.starts_with('/')

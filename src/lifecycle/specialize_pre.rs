@@ -394,6 +394,22 @@ impl RuntimeFlow {
             self.should_monitor
         );
 
+        if is_monitor_only {
+            // 仅监控保留 Android 原始存储视图与授权，模块留驻供 post 安装被动监控 hook。
+            self.should_keep_module_loaded = true;
+            log::info!(
+                "monitor backend=passive pkg={} (no storage mount)",
+                self.package_name
+            );
+            self.log_specialize_exit(
+                "monitor_passive",
+                config.get_app_count(),
+                is_system_writer,
+                &perf_stages,
+            );
+            return;
+        }
+
         let route_config_started_ms = monotonic_ms();
         let (
             allowed_real_paths,
@@ -506,11 +522,7 @@ impl RuntimeFlow {
             self.should_monitor
         );
 
-        let storage_backend_mode = if is_monitor_only {
-            crate::config::StorageBackendMode::Fuse
-        } else {
-            config.storage_backend_mode()
-        };
+        let storage_backend_mode = config.storage_backend_mode();
         let is_file_monitor_enabled = config.is_file_monitor_enabled();
         let app_redirect_hook_reason = app_redirect_hook_reason_for_process();
         self.should_install_app_redirect_hook = app_redirect_hook_reason.is_some();

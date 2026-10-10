@@ -139,6 +139,13 @@ pub fn register_app_policy(
     config: &crate::fuse_redirect::FuseRedirectConfig,
     policy_fingerprint: u64,
 ) -> bool {
+    if config.is_monitor_only {
+        log::warn!(
+            "fuse policy rejected reason=passive_monitor pkg={}",
+            config.package_name
+        );
+        return false;
+    }
     let fd = HOST_CONTROL_FD.load(Ordering::Relaxed);
     if fd < 0 {
         return false;

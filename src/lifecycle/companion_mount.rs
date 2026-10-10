@@ -29,6 +29,13 @@ use sys::{c_str, errno_text, last_errno};
 
 // 等待目标进程就绪后在子进程中执行挂载
 pub fn execute_companion_mount_request(request: &CompanionMountRequest) -> bool {
+    if request.is_monitor_only {
+        log::info!(
+            "companion mount skip reason=passive_monitor pkg={}",
+            request.package_name
+        );
+        return false;
+    }
     let started_ms = monotonic_ms();
     if !is_redirect_enabled_for_request(request) {
         crate::mount_intent::mark_state(
@@ -117,13 +124,7 @@ fn is_redirect_enabled_for_request(request: &CompanionMountRequest) -> bool {
         return false;
     }
     config.reload_if_changed();
-    config.should_redirect(&request.package_name, request.uid)
-        || (request.is_monitor_only
-            && crate::config::should_capture_unconfigured_app(
-                &request.package_name,
-                request.uid,
-                config.is_file_monitor_enabled(),
-            ))
+    !request.is_monitor_only && config.should_redirect(&request.package_name, request.uid)
 }
 
 // 应用侧裸视图窗口的 fail-closed 屏障（详见 execute_companion_mount_request 调用点注释）。
@@ -596,8 +597,6 @@ fn handle_child_process(
     let preattached_host = preattach_shared_host(request, scoped_fuse_roots);
     let is_success = if preattached_host.is_some() {
         true
-    } else if request.is_monitor_only {
-        mount_mgr.ensure_mount_namespace_prepared()
     } else if request.is_mapping_mode_only {
         log::info!("map-only mount count={}", request.path_mappings.len());
         mount_mgr.apply_path_mappings_only(
@@ -786,12 +785,14 @@ fn shared_host_preattach_candidate(
     request: &CompanionMountRequest,
     scoped_fuse_roots: &[String],
 ) -> bool {
+    if request.is_monitor_only {
+        return false;
+    }
     let is_auto = matches!(
         request.storage_backend_mode,
         crate::config::StorageBackendMode::Auto
     );
-    let is_monitor_only = request.is_monitor_only && request.is_file_monitor_enabled;
-    if !is_auto && !is_monitor_only {
+    if !is_auto {
         return false;
     }
     let user_id = platform::user_id_from_uid(request.uid);

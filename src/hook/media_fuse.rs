@@ -169,6 +169,10 @@ pub fn should_allow_private_owner_sqlite_access_for_caller(
     }
 
     let allow_by_owner = should_allow_private_owner_sqlite_for_owner(&owner_package, user_id);
+    // 归因提示与路径 token 不代表 Android 授权；兼容例外仅限明确启用重定向的目标包。
+    if !allow_by_owner {
+        return false;
+    }
     let allow_by_path_token = should_allow_private_owner_sqlite_for_caller_token(
         &normalized_path,
         &owner_package,
@@ -214,6 +218,9 @@ pub fn has_recent_private_owner_sqlite_access_for_caller(
     else {
         return false;
     };
+    if !should_allow_private_owner_sqlite_for_owner(&owner_package, user_id) {
+        return false;
+    }
     if caller_uid < writer::ANDROID_APP_UID_START
         || platform::user_id_from_uid(caller_uid) != user_id
     {
@@ -247,6 +254,9 @@ pub fn has_recent_private_owner_sqlite_access_for_caller(
 
 pub fn has_recent_private_owner_sqlite_access(path: &str) -> Option<i32> {
     let (normalized_path, owner_package, user_id) = resolve_private_owner_sqlite_path(path)?;
+    if !should_allow_private_owner_sqlite_for_owner(&owner_package, user_id) {
+        return None;
+    }
 
     let now_ms = paths::monotonic_ms();
     let Ok(mut accesses) = RECENT_PRIVATE_OWNER_SQLITE_ACCESS.lock() else {
@@ -646,9 +656,7 @@ fn retain_recent_private_owner_sqlite_accesses(
 }
 
 fn should_allow_private_owner_sqlite_for_owner(owner_package: &str, user_id: i32) -> bool {
-    let config = SettingsHub::instance();
-    config.is_file_monitor_enabled()
-        || config.is_user_profile_enabled_in_memory(owner_package, user_id)
+    SettingsHub::instance().is_user_profile_enabled_in_memory(owner_package, user_id)
 }
 
 fn should_force_private_owner_sqlite_for_owner(owner_package: &str, user_id: i32) -> bool {

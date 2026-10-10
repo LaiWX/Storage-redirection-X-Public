@@ -145,6 +145,7 @@ fn should_install_process_plt_hook(flow: &RuntimeFlow, is_redirect_via_hook: boo
     }
 
     policy::is_system_writer_package(&flow.package_name)
+        || (flow.should_monitor && !flow.should_redirect)
         || (flow.should_monitor && policy::is_saf_native_monitor_bridge_package(&flow.package_name))
 }
 
