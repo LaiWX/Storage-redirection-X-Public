@@ -694,7 +694,10 @@ fn locate_android_jar() -> Option<PathBuf> {
     let mut best: Option<(u32, PathBuf)> = None;
     for entry in std::fs::read_dir(&platforms).ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let Some(api) = name.strip_prefix("android-").and_then(|s| s.parse().ok()) else {
+        let Some(api) = name
+            .strip_prefix("android-")
+            .and_then(|s| s.split('.').next()?.parse().ok())
+        else {
             continue;
         };
         let jar = entry.path().join("android.jar");

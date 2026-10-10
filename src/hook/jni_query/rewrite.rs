@@ -1363,6 +1363,10 @@ fn is_package_uid_match(package_name: &str, caller_uid: i32) -> bool {
 
 // 通过 syscall 检查路径是否存在，避免走 Hook 链路
 fn path_exists_by_syscall(path: &str) -> bool {
+    super::existence::exists(path, || path_exists_uncached(path))
+}
+
+fn path_exists_uncached(path: &str) -> bool {
     let Ok(c_path) = CString::new(path) else {
         return false;
     };

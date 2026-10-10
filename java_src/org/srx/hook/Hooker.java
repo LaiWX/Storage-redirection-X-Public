@@ -1975,6 +1975,10 @@ public class Hooker {
 
   private static native String resolveOpenPath(String path, int callerUid);
 
+  private static native long beginCursorExistenceScope(int callerUid, boolean useSnapshot);
+
+  private static native void endCursorExistenceScope(long token);
+
   private static native boolean storagePathExistsBySyscall(String path);
 
   private static native boolean isProviderVirtualPathVisible(String path);
@@ -5629,6 +5633,20 @@ public class Hooker {
     }
 
     static Cursor wrap(
+        Cursor base,
+        int callerUid,
+        String[] visibleColumns,
+        boolean allowMissingMappedTarget,
+        Object[] queryArgs) {
+      long existenceScope = beginCursorExistenceScope(callerUid, !allowMissingMappedTarget);
+      try {
+        return wrapBody(base, callerUid, visibleColumns, allowMissingMappedTarget, queryArgs);
+      } finally {
+        endCursorExistenceScope(existenceScope);
+      }
+    }
+
+    private static Cursor wrapBody(
         Cursor base,
         int callerUid,
         String[] visibleColumns,

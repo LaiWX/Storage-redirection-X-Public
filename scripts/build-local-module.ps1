@@ -178,6 +178,7 @@ function Initialize-AndroidEnvironment {
     }
     $env:ANDROID_NDK_HOME = $ndk
     $env:ANDROID_NDK_ROOT = $ndk
+    $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = Join-Path $llvmBin "aarch64-linux-android29-clang.cmd"
     Add-PathPrefix $llvmBin
 
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {

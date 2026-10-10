@@ -29,6 +29,7 @@ pub(crate) use context::{
     provider_passthrough_virtual_query_target, remember_provider_passthrough_virtual_dir,
 };
 pub(crate) use jni_query::{
+    begin_cursor_existence_scope, end_cursor_existence_scope,
     is_redirect_enabled_for_caller_uid, resolve_download_media_placeholder_path_for_caller,
     resolve_media_store_direct_path_for_caller, resolve_open_storage_path_for_caller,
     rewrite_cursor_storage_path_for_caller, rewrite_media_store_bucket_id_for_caller,

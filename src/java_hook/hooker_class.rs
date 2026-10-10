@@ -93,6 +93,16 @@ pub fn init(env: *mut JNIEnv, hooker_class: jclass) -> bool {
 
     let methods = [
         JNINativeMethod {
+            name: c"beginCursorExistenceScope".as_ptr().cast_mut(),
+            signature: c"(IZ)J".as_ptr().cast_mut(),
+            fnPtr: begin_cursor_existence_scope as *mut _,
+        },
+        JNINativeMethod {
+            name: c"endCursorExistenceScope".as_ptr().cast_mut(),
+            signature: c"(J)V".as_ptr().cast_mut(),
+            fnPtr: end_cursor_existence_scope as *mut _,
+        },
+        JNINativeMethod {
             name: DO_HOOK_NAME.as_ptr() as *mut _,
             signature: DO_HOOK_SIG.as_ptr() as *mut _,
             fnPtr: do_hook as *mut _,
@@ -875,4 +885,22 @@ fn call_backup(env: *mut JNIEnv, hooker: jobject, args: jobjectArray) -> jobject
         return std::ptr::null_mut();
     }
     call_object_method_a(env, hooker, backup_mid, &[jvalue { l: args }])
+}
+
+unsafe extern "C" fn begin_cursor_existence_scope(
+    _env: *mut JNIEnv,
+    _class: jclass,
+    uid: jni_sys::jint,
+    use_snapshot: jni_sys::jboolean,
+) -> jni_sys::jlong {
+    crate::hook::begin_cursor_existence_scope(uid, use_snapshot == jni_sys::JNI_TRUE)
+        as jni_sys::jlong
+}
+
+unsafe extern "C" fn end_cursor_existence_scope(
+    _env: *mut JNIEnv,
+    _class: jclass,
+    token: jni_sys::jlong,
+) {
+    crate::hook::end_cursor_existence_scope(token as u64);
 }

@@ -1,8 +1,13 @@
 // CursorWindow 查询层 Hook：按重定向规则过滤与改写 MediaStore 查询结果
 
+mod existence;
 mod path_util;
 mod rewrite;
 mod types;
+
+pub(crate) use existence::{
+    begin as begin_cursor_existence_scope, end as end_cursor_existence_scope,
+};
 
 pub(crate) use rewrite::{
     is_redirect_enabled_for_caller_uid, resolve_download_media_placeholder_path_for_caller,
