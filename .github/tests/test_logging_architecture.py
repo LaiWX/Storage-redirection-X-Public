@@ -534,7 +534,7 @@ class LoggingArchitectureTest(unittest.TestCase):
 
     def test_native_fixed_capacity_caches_evict_incrementally(self) -> None:
         paths = read_paths_module()
-        monitor = read("src/config/inspect.rs")
+        monitor = read("src/config/monitor_filter.rs")
         cache = read("src/platform/lru_cache.rs")
         raw = read("src/config/raw_scan.rs")
 
@@ -558,20 +558,20 @@ class LoggingArchitectureTest(unittest.TestCase):
             monitor.index("pub fn reconfigure") : monitor.index("fn retry_missing_watch_roots")
         ]
         emit = events[events.index("pub(super) fn emit_monitor_event") : events.index("fn watch_package_identity")]
-        duplicate = monitor[
-            monitor.index("fn should_skip_duplicate") : monitor.index("fn trim_recent_events")
-        ]
 
         self.assertIn("get_daemon_monitor_config_snapshot", config)
         self.assertEqual(1, reconfigure.count("get_daemon_monitor_config_snapshot()"))
         self.assertNotIn("get_monitor_app_specs", reconfigure)
         self.assertNotIn("get_public_owner_repair_app_specs", reconfigure)
         self.assertNotIn("should_filter_monitor_record", emit)
-        self.assertEqual(2, duplicate.count('format!("{}|create|{}|{}"'))
-        self.assertNotIn(
-            'let create_key = format!("{}|create|{}|{}", package_name, path, from_path);\n        if operation_name',
-            duplicate,
-        )
+        self.assertNotIn("should_skip_duplicate", monitor)
+        self.assertNotIn("should_filter_monitor_record", events)
+        daemon = read("src/log_daemon.rs")
+        self.assertIn("MonitorEvent::parse(message)", daemon)
+        self.assertIn("should_filter_monitor_record(&event.fields[4], &operation)", daemon)
+        self.assertIn("self.monitor.ingest(event)", daemon)
+        self.assertNotIn("FLUSH_BATCH_LINES", daemon)
+        self.assertNotIn("MAX_MONITOR_BYTES", daemon)
 
     def test_public_owner_repair_does_not_consume_audit_watches(self) -> None:
         monitor = read("src/daemon_monitor.rs")

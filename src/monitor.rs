@@ -33,12 +33,10 @@ use std::sync::{
 use thread_hint::infer_component_from_thread_name;
 
 const LOGCAT_OP_TAG: &str = "FileMonitorOp";
-const DUPLICATE_EVENT_WINDOW_MS: i64 = 1500;
 // 优化：延长 caller package 时间窗口，减少误判
 const RECENT_CALLER_PACKAGE_WINDOW_MS: i64 = 2500;
 // 优化：延长 query access 时间窗口，提高路径推断准确性
 const QUERY_ACCESS_WINDOW_MS: i64 = 8_000;
-const MAX_RECENT_EVENTS: usize = 512;
 const MAX_QUERY_ACCESS_PATHS: usize = 1024;
 const QUERY_ACCESS_QUEUE_COMPACTION_LIMIT: usize = MAX_QUERY_ACCESS_PATHS * 2;
 
@@ -63,8 +61,6 @@ struct AuditState {
     shared_uid_packages: String,
     caller_package: String,
     caller_package_updated_ms: i64,
-    recent_event_ms: HashMap<String, i64>,
-    recent_event_order: VecDeque<String>,
     query_access_paths: HashMap<String, QueryAccessRecord>,
     query_access_order: VecDeque<(String, u64)>,
     next_query_access_generation: u64,
@@ -119,8 +115,6 @@ impl AuditState {
             shared_uid_packages: String::new(),
             caller_package: String::new(),
             caller_package_updated_ms: -1,
-            recent_event_ms: HashMap::new(),
-            recent_event_order: VecDeque::new(),
             query_access_paths: HashMap::new(),
             query_access_order: VecDeque::new(),
             next_query_access_generation: 0,
@@ -144,8 +138,6 @@ impl AuditTrail {
         state.uid = uid;
         state.caller_package.clear();
         state.caller_package_updated_ms = -1;
-        state.recent_event_ms.clear();
-        state.recent_event_order.clear();
         state.query_access_paths.clear();
         state.query_access_order.clear();
         state.next_query_access_generation = 0;
@@ -235,10 +227,7 @@ impl AuditTrail {
             return false;
         }
         let normalized = normalize_storage_path_locked(path);
-        if normalized.is_empty()
-            || is_filtered_media_provider_path(&normalized)
-            || SettingsHub::instance().should_filter_monitor_record(&normalized, "mkdir")
-        {
+        if normalized.is_empty() || is_filtered_media_provider_path(&normalized) {
             return false;
         }
         let Some(package_name) = resolve_recent_path_caller_package(caller_uid, caller_package)
@@ -335,9 +324,6 @@ impl AuditTrail {
             return false;
         };
         let op_filter = normalize_provider_open_op_filter(op_filter);
-        if SettingsHub::instance().should_filter_monitor_record(&normalized, op_filter) {
-            return false;
-        }
         let correlation_id = remember_saf_path_caller_hint(
             &normalized,
             &package_name,
@@ -373,9 +359,6 @@ impl AuditTrail {
         }
         let normalized = normalize_storage_path_locked(path);
         if normalized.is_empty() || is_filtered_media_provider_path(&normalized) {
-            return None;
-        }
-        if SettingsHub::instance().should_filter_monitor_record(&normalized, source) {
             return None;
         }
         let package_name = resolve_recent_path_caller_package(caller_uid, caller_package)?;
@@ -434,11 +417,6 @@ impl AuditTrail {
             return;
         }
 
-        // EEXIST 属于幂等检查，不记录
-        if result == -1 && error_no == libc::EEXIST {
-            return;
-        }
-
         let normalized = normalize_storage_path_locked(path);
         if normalized.is_empty() {
             return;
@@ -449,15 +427,6 @@ impl AuditTrail {
         }
 
         let operation_name = operation_name_from_extra(kind, extra);
-        let filter_operation = if is_read_only_rule_deny_extra(extra) {
-            ""
-        } else {
-            &operation_name
-        };
-        if SettingsHub::instance().should_filter_monitor_record(&normalized, filter_operation) {
-            return;
-        }
-
         // 归因过程包含 hint 文件读写与 /proc 扫描，不能持锁进行：这把锁被所有 hook
         // 线程共用，MediaProvider 的多个 binder 线程会因此完全串行。这里只在锁内取
         // 归因所需的状态快照和唯一依赖 state 的中间结果，随后释放锁再做 IO。
@@ -480,19 +449,7 @@ impl AuditTrail {
             query_access_identity,
         );
 
-        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
-        let event_key = build_event_key_locked(
-            &state,
-            &source_identity,
-            kind,
-            &operation_name,
-            &normalized,
-            result,
-            error_no,
-        );
-        if should_skip_duplicate_event_locked(&mut state, &event_key) {
-            return;
-        }
+        let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
         let state_snapshot = MonitorStateSnapshot {
             package_name: state.package_name.clone(),
             uid: state.uid,
@@ -1306,54 +1263,6 @@ fn normalize_package_text(source: &str) -> String {
     value.to_string()
 }
 
-// 时间窗口内抑制相同 event_key 重复事件
-fn should_skip_duplicate_event_locked(state: &mut AuditState, event_key: &str) -> bool {
-    if event_key.is_empty() {
-        return false;
-    }
-
-    let now_ms = paths::monotonic_ms();
-    if let Some(entry) = state.recent_event_ms.get_mut(event_key) {
-        if now_ms - *entry < DUPLICATE_EVENT_WINDOW_MS {
-            *entry = now_ms;
-            return true;
-        }
-        *entry = now_ms;
-        return false;
-    }
-
-    state.recent_event_ms.insert(event_key.to_string(), now_ms);
-    state.recent_event_order.push_back(event_key.to_string());
-    while state.recent_event_order.len() > MAX_RECENT_EVENTS {
-        if let Some(oldest) = state.recent_event_order.pop_front() {
-            state.recent_event_ms.remove(&oldest);
-        }
-    }
-    false
-}
-
-fn build_event_key_locked(
-    state: &AuditState,
-    source_identity: &SourceIdentity,
-    kind: OpKind,
-    operation_name: &str,
-    normalized_path: &str,
-    result: i32,
-    error_no: i32,
-) -> String {
-    let operation_key = duplicate_event_operation_key(kind, operation_name);
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}",
-        state.package_name,
-        source_identity.package_name,
-        op_type_to_text(kind),
-        operation_key,
-        normalized_path,
-        result,
-        error_no
-    )
-}
-
 fn op_type_to_text(kind: OpKind) -> &'static str {
     match kind {
         OpKind::Open => "OPEN",
@@ -1384,14 +1293,6 @@ fn operation_name_from_extra(kind: OpKind, extra: &str) -> String {
         }
     }
     op_type_to_text(kind).to_lowercase()
-}
-
-fn duplicate_event_operation_key(kind: OpKind, operation_name: &str) -> &str {
-    if matches!(kind, OpKind::Open) && is_open_write_or_create_operation(operation_name) {
-        "open:write"
-    } else {
-        operation_name
-    }
 }
 
 fn is_monitor_write_operation(op: &str) -> bool {

@@ -29,10 +29,8 @@ const STATS_TEMP_FILE: &str = crate::platform::module_paths::STATS_TEMP_FILE;
 const STATS_RESET_ACK_FILE: &str = crate::platform::module_paths::STATS_RESET_ACK_FILE;
 const MONITOR_CLEAR_ACK_FILE: &str = crate::platform::module_paths::MONITOR_CLEAR_ACK_FILE;
 const MAX_RUNNING_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_MONITOR_BYTES: u64 = 1024 * 1024;
 const LOG_BACKUPS: usize = 2;
 const RECV_BUFFER_SIZE: usize = 16 * 1024;
-const FLUSH_BATCH_LINES: usize = 64;
 const FLUSH_INTERVAL_MS: i32 = 2_000;
 /// 单轮 poll 之后最多连续排空的 datagram 数量，避免持续高压写入时
 /// 接收循环长期不返回、迟迟不执行 flush 与统计落盘。
@@ -122,7 +120,21 @@ pub fn start() -> io::Result<()> {
         })
 }
 
+pub fn send_monitor_record(line: &str) -> io::Result<()> {
+    if crate::monitor_log::MonitorEvent::parse(line).is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid monitor record",
+        ));
+    }
+    send_packet(TAG_FILE_MONITOR, line)
+}
+
 pub fn send_control(command: &str) -> io::Result<()> {
+    send_packet(TAG_CONTROL, command)
+}
+
+fn send_packet(tag: &str, command: &str) -> io::Result<()> {
     if command.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -135,7 +147,7 @@ pub fn send_control(command: &str) -> io::Result<()> {
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
-    let result = send_control_packet(fd, command);
+    let result = send_control_packet(fd, tag, command);
     // SAFETY: fd 由此函数持有，且同步发送已经完成。
     unsafe { close(fd) };
     result
@@ -148,9 +160,9 @@ pub fn take_reconcile_request() -> Option<String> {
         .and_then(|mut request| request.take())
 }
 
-fn send_control_packet(fd: i32, command: &str) -> io::Result<()> {
+fn send_control_packet(fd: i32, tag: &str, command: &str) -> io::Result<()> {
     let (addr, addr_len) = socket_addr()?;
-    let packet = format!("I\t{TAG_CONTROL}\t{command}");
+    let packet = format!("I\t{tag}\t{command}");
     // SAFETY: packet 和 addr 在调用期间保持有效，长度与缓冲区一致。
     let sent = unsafe {
         sendto(
@@ -177,10 +189,12 @@ fn run(fd: i32, mut state: LogState) {
             events: POLLIN,
             revents: 0,
         };
-        // SAFETY: poll_fd 在调用期间指向一个已初始化的 pollfd。
-        let ready = unsafe { poll(&mut poll_fd, 1, FLUSH_INTERVAL_MS) };
+        let timeout =
+            crate::monitor_log::remaining_flush_ms(state.last_flush.elapsed(), FLUSH_INTERVAL_MS);
+        // SAFETY: poll_fd 在调用期间指向一个已初始化的 pollfd，timeout 为非负毫秒数。
+        let ready = unsafe { poll(&mut poll_fd, 1, timeout) };
         if ready <= 0 {
-            state.flush_pending();
+            state.flush_if_due();
             continue;
         }
 
@@ -205,6 +219,7 @@ fn run(fd: i32, mut state: LogState) {
                 continue;
             };
             state.handle(packet, sender_uid);
+            state.flush_if_due();
         }
         state.flush_if_due();
     }
@@ -342,7 +357,7 @@ struct SenderQuota {
 
 struct LogState {
     running: RollingLog,
-    monitor: RollingLog,
+    monitor: crate::monitor_log::MonitorJournal,
     runtime_activations: u64,
     stats_dirty: bool,
     last_flush: Instant,
@@ -353,7 +368,7 @@ impl LogState {
     fn new() -> io::Result<Self> {
         Ok(Self {
             running: RollingLog::open(RUNNING_LOG, MAX_RUNNING_BYTES)?,
-            monitor: RollingLog::open(FILE_MONITOR_LOG, MAX_MONITOR_BYTES)?,
+            monitor: crate::monitor_log::MonitorJournal::open(FILE_MONITOR_LOG)?,
             runtime_activations: read_runtime_activations(),
             stats_dirty: false,
             last_flush: Instant::now(),
@@ -418,7 +433,14 @@ impl LogState {
             // 监控与统计的发送方是任意应用 uid，无法做身份校验，改为按发送方限流。
             TAG_FILE_MONITOR => {
                 if self.allow_from_sender(sender_uid) {
-                    self.monitor.append(message);
+                    if let Some(event) = crate::monitor_log::MonitorEvent::parse(message) {
+                        let operation = event.filter_operation();
+                        if !crate::config::SettingsHub::instance()
+                            .should_filter_monitor_record(&event.fields[4], &operation)
+                        {
+                            self.monitor.ingest(event);
+                        }
+                    }
                 }
             }
             TAG_STATS => {
@@ -509,8 +531,10 @@ impl LogState {
     }
 
     fn clear_monitor(&mut self, token: Option<&str>) {
-        self.monitor.clear();
-        self.monitor.flush();
+        if let Err(error) = self.monitor.clear() {
+            log::warn!("清空文件监视日志失败: {}", error);
+            return;
+        }
         let Some(token) = token else {
             return;
         };
@@ -534,7 +558,9 @@ impl LogState {
 
     fn flush_pending(&mut self) {
         self.running.flush();
-        self.monitor.flush();
+        if let Err(error) = self.monitor.flush() {
+            log::warn!("保存文件监视日志失败，将重试: {}", error);
+        }
         if self.stats_dirty && persist_runtime_activations(self.runtime_activations).is_ok() {
             self.stats_dirty = false;
         }
@@ -609,9 +635,6 @@ impl RollingLog {
             .saturating_add(line.len() as u64)
             .saturating_add(1);
         self.pending_lines += 1;
-        if self.pending_lines >= FLUSH_BATCH_LINES {
-            self.flush();
-        }
     }
 
     fn flush(&mut self) {
@@ -671,60 +694,10 @@ impl RollingLog {
             set_log_permissions(&self.path);
         }
     }
-
-    fn clear(&mut self) {
-        if let Some(writer) = self.writer.as_mut() {
-            let _ = writer.flush();
-        }
-        // 截断前先释放句柄，避免 append 模式下的旧偏移把日志写回被清空的文件尾部。
-        self.writer = None;
-        self.pending_bytes = 0;
-        self.pending_lines = 0;
-        if fs::write(&self.path, []).is_err() {
-            let _ = self.writer_mut();
-            return;
-        }
-        remove_numeric_backups(&self.path);
-        if let Ok(file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        {
-            self.writer = Some(BufWriter::new(file));
-            self.persisted_bytes = 0;
-            set_log_permissions(&self.path);
-        }
-    }
 }
 
 fn backup_path(path: &Path, index: usize) -> PathBuf {
     PathBuf::from(format!("{}.{}", path.display(), index))
-}
-
-fn remove_numeric_backups(path: &Path) {
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    let Some(base_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return;
-    };
-    let prefix = format!("{base_name}.");
-    let Ok(entries) = fs::read_dir(parent) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        let Some(suffix) = name.strip_prefix(&prefix) else {
-            continue;
-        };
-        if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
-            continue;
-        }
-        let _ = fs::remove_file(entry.path());
-    }
 }
 
 fn set_log_permissions(path: &Path) {

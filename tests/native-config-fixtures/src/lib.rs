@@ -265,3 +265,10 @@ mod monitor_filter {
         "/../../src/config/monitor_filter.rs"
     ));
 }
+
+#[cfg(test)]
+#[path = "../../../src/monitor_log/mod.rs"]
+mod monitor_log;
+
+#[cfg(test)]
+mod monitor_log_tests;

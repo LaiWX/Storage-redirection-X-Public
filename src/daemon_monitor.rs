@@ -19,11 +19,9 @@ use roots::{
     dedup_roots, is_under_any_root, select_watch_start, should_descend_into_child,
     should_record_display_path, sort_roots_by_monitor_priority,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
-const DUPLICATE_EVENT_WINDOW_MS: i64 = 1500;
 const MISSING_ROOT_RETRY_MS: i64 = 1000;
-const MAX_RECENT_EVENTS: usize = 512;
 const DEFAULT_MAX_WATCHES: usize = 8192;
 /// 防止设备把 inotify 配额调得过大后，监视器一次性递归展开整个共享存储。
 const MAX_WATCHES_CEILING: usize = 32768;
@@ -117,8 +115,6 @@ pub struct RegularAppMonitor {
     config_version: u64,
     watch_nodes: HashMap<i32, Vec<WatchNode>>,
     max_watches: usize,
-    recent_event_ms: HashMap<String, i64>,
-    recent_event_order: VecDeque<String>,
     missing_watch_roots: Vec<WatchRoot>,
     public_owner_roots: Vec<WatchRoot>,
     missing_roots: usize,
@@ -147,8 +143,6 @@ impl RegularAppMonitor {
             config_version: 0,
             watch_nodes: HashMap::new(),
             max_watches: runtime_max_watches(),
-            recent_event_ms: HashMap::new(),
-            recent_event_order: VecDeque::new(),
             missing_watch_roots: Vec::new(),
             public_owner_roots: Vec::new(),
             missing_roots: 0,
@@ -982,15 +976,6 @@ impl RegularAppMonitor {
             ) {
                 continue;
             }
-            if self.should_skip_duplicate(
-                &identity.package_name,
-                &event_paths.display_path,
-                &event_paths.from_path,
-                operation_name,
-                mask,
-            ) {
-                continue;
-            }
             emit_monitor_event(
                 &identity,
                 &event_paths,
@@ -999,71 +984,6 @@ impl RegularAppMonitor {
                 mask,
                 operation_name,
             );
-        }
-    }
-
-    fn should_skip_duplicate(
-        &mut self,
-        package_name: &str,
-        path: &str,
-        from_path: &str,
-        operation_name: &str,
-        mask: u32,
-    ) -> bool {
-        let now_ms = paths::monotonic_ms();
-        if operation_name == "open:write" && !inotify::is_modify(mask) {
-            let create_key = format!("{}|create|{}|{}", package_name, path, from_path);
-            if self
-                .recent_event_ms
-                .get(&create_key)
-                .is_some_and(|last_ms| now_ms.saturating_sub(*last_ms) < DUPLICATE_EVENT_WINDOW_MS)
-            {
-                return true;
-            }
-        }
-
-        let event_key = format!("{}|{}|{}|{}", package_name, operation_name, path, from_path);
-        if inotify::is_modify(mask) {
-            if self
-                .recent_event_ms
-                .insert(event_key.clone(), now_ms)
-                .is_none()
-            {
-                self.recent_event_order.push_back(event_key);
-            }
-            self.trim_recent_events();
-            return false;
-        }
-        if let Some(last_ms) = self.recent_event_ms.get_mut(&event_key) {
-            if now_ms.saturating_sub(*last_ms) < DUPLICATE_EVENT_WINDOW_MS {
-                *last_ms = now_ms;
-                return true;
-            }
-            *last_ms = now_ms;
-            return false;
-        }
-
-        self.recent_event_ms.insert(event_key.clone(), now_ms);
-        self.recent_event_order.push_back(event_key);
-        if inotify::is_created_or_moved_to(mask) {
-            let create_key = format!("{}|create|{}|{}", package_name, path, from_path);
-            if self
-                .recent_event_ms
-                .insert(create_key.clone(), now_ms)
-                .is_none()
-            {
-                self.recent_event_order.push_back(create_key);
-            }
-        }
-        self.trim_recent_events();
-        false
-    }
-
-    fn trim_recent_events(&mut self) {
-        while self.recent_event_order.len() > MAX_RECENT_EVENTS {
-            if let Some(oldest) = self.recent_event_order.pop_front() {
-                self.recent_event_ms.remove(&oldest);
-            }
         }
     }
 }

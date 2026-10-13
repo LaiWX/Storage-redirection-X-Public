@@ -692,9 +692,8 @@ fn raw_parent(path: &str) -> String {
     }
 }
 
-pub(super) fn should_filter_display_path(path: &str, operation_name: &str) -> bool {
+pub(super) fn should_filter_display_path(path: &str, _operation_name: &str) -> bool {
     paths::is_filtered_media_provider_path(path)
-        || SettingsHub::instance().should_filter_monitor_record(path, operation_name)
 }
 
 pub(super) fn monitor_operation_from_mask(mask: u32) -> &'static str {

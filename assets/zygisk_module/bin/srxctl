@@ -343,6 +343,8 @@ clear_monitor_log() {
         i=$((i + 1))
       done
     fi
+    # 新存储格式要求确认；失败时不能把异步发送当作清空成功。
+    [ ! -f "$LOGS_DIR/file_monitor.records-format" ] || return 1
     # 兼容尚未支持清理确认令牌的旧 daemon；新版本优先走上面的握手。
     if "$daemon_bin" control clear-monitor; then
       usleep 100000 2>/dev/null || sleep 0.1

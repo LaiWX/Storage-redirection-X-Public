@@ -1,24 +1,18 @@
 use crate::domain::{PathMapping, sort_path_mappings_shortest_request_first};
 use crate::mount_ledger::NamespaceIdentity;
 use crate::platform::{fs, module_paths, paths};
-use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use super::FuseRedirectConfig;
 
 const FILE_MONITOR_LOG_TAG: &str = "FileMonitorOp";
 const READ_ONLY_DENY_EXTRA: &str = "deny_reason=read_only_rule";
-const DUPLICATE_MONITOR_CREATE_WINDOW_MS: i64 = 1500;
-const MAX_RECENT_MONITOR_CREATES: usize = 256;
 static NAMESPACE_POLICY_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 static NAMESPACE_POLICY_MISSES: AtomicU64 = AtomicU64::new(0);
-
-static RECENT_MONITOR_CREATES: Lazy<Mutex<HashMap<String, i64>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub(super) struct BackendPath {
     pub(super) rel: String,
@@ -836,20 +830,10 @@ impl RedirectPolicy {
             return;
         }
         let display_path = self.storage_path_for_rel(&backend.rel);
-        if display_path.is_empty()
-            || crate::config::SettingsHub::instance()
-                .should_filter_monitor_record(&display_path, "fuse_create")
-        {
+        if display_path.is_empty() {
             return;
         }
         let backend_path = backend.path.to_string_lossy();
-        if should_skip_duplicate_monitor_create(
-            &self.package_name,
-            &display_path,
-            backend_path.as_ref(),
-        ) {
-            return;
-        }
         let identify_method = self.monitor_identify_method();
         let operation = if self.is_monitor_only {
             "fuse_monitor_create"
@@ -885,10 +869,7 @@ impl RedirectPolicy {
             return;
         }
         let display_path = self.storage_path_for_rel(&backend.rel);
-        if display_path.is_empty()
-            || crate::config::SettingsHub::instance()
-                .should_filter_monitor_record(&display_path, operation_name)
-        {
+        if display_path.is_empty() {
             return;
         }
         let backend_path = backend.path.to_string_lossy();
@@ -953,10 +934,7 @@ impl RedirectPolicy {
             return None;
         }
         let display_path = self.storage_path_for_rel(&backend.rel);
-        if display_path.is_empty()
-            || crate::config::SettingsHub::instance()
-                .should_filter_monitor_record(&display_path, "")
-        {
+        if display_path.is_empty() {
             return None;
         }
         let backend_path = backend.path.to_string_lossy();
@@ -1066,38 +1044,6 @@ fn build_monitor_timestamp() -> String {
         return String::new();
     }
     String::from_utf8_lossy(&buffer[..written]).to_string()
-}
-
-fn should_skip_duplicate_monitor_create(
-    package_name: &str,
-    display_path: &str,
-    backend_path: &str,
-) -> bool {
-    if package_name.is_empty() || display_path.is_empty() || backend_path.is_empty() {
-        return false;
-    }
-    let key = format!("{}|{}|{}", package_name, display_path, backend_path);
-    let now_ms = paths::monotonic_ms();
-    // 该函数可能在 fork 出来的 FUSE 子进程里执行，阻塞获取全局锁会因为父进程线程持锁而永久卡死；
-    // 去重只是优化项，拿不到锁时按未去重处理即可。
-    let Ok(mut recent) = RECENT_MONITOR_CREATES.try_lock() else {
-        return false;
-    };
-    if let Some(last_ms) = recent.get_mut(&key) {
-        if now_ms.saturating_sub(*last_ms) < DUPLICATE_MONITOR_CREATE_WINDOW_MS {
-            *last_ms = now_ms;
-            return true;
-        }
-        *last_ms = now_ms;
-        return false;
-    }
-    if recent.len() >= MAX_RECENT_MONITOR_CREATES {
-        recent.retain(|_, last_ms| {
-            now_ms.saturating_sub(*last_ms) < DUPLICATE_MONITOR_CREATE_WINDOW_MS
-        });
-    }
-    recent.insert(key, now_ms);
-    false
 }
 
 pub(super) fn build_rule_prefixes(

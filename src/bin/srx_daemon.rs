@@ -39,6 +39,8 @@ mod metadata_repair;
 mod module_mount_source;
 #[path = "monitor/mod.rs"]
 mod monitor;
+#[path = "../monitor_log/mod.rs"]
+mod monitor_log;
 #[path = "../mount.rs"]
 mod mount;
 #[path = "../mount_identity.rs"]
@@ -82,6 +84,20 @@ fn main() {
             std::process::exit(2);
         };
         std::process::exit(if log_daemon::send_control(&command).is_ok() {
+            0
+        } else {
+            1
+        });
+    }
+    if command.as_deref() == Some("monitor-record") {
+        let Some(line) = args.next() else {
+            eprintln!("usage: srx_daemon monitor-record <line>");
+            std::process::exit(2);
+        };
+        if args.next().is_some() {
+            std::process::exit(2);
+        }
+        std::process::exit(if log_daemon::send_monitor_record(&line).is_ok() {
             0
         } else {
             1
