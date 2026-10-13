@@ -105,6 +105,7 @@ private fun TemplateNameDialog(
 
 @Composable
 private fun LogsPreview(logs: List<LogEntry>) {
+  val today = rememberLogToday()
   var showFullTime by rememberSaveable { mutableStateOf(false) }
   SectionTitle("最近文件监视")
   GlassCard(
@@ -119,6 +120,7 @@ private fun LogsPreview(logs: List<LogEntry>) {
         LogRow(
             entry = it,
             showFullTime = showFullTime,
+            today = today,
             onToggleTime = { showFullTime = !showFullTime },
         )
       }

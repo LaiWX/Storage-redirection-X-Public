@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.LocalDate
 import org.srx.manager.CenteredDialog
 import org.srx.manager.EmptyText
 import org.srx.manager.GlassCard
@@ -91,6 +92,7 @@ internal fun LogsScreen(
   var confirmClear by remember { mutableStateOf(false) }
   var showFilters by remember { mutableStateOf(false) }
   var showFullTime by rememberSaveable { mutableStateOf(false) }
+  val today = rememberLogToday()
   val appsByPackage = remember(apps) { apps.associateBy { it.packageName } }
   val logItems = remember(logs) { buildLogListItems(logs) }
   val filtered =
@@ -165,6 +167,7 @@ internal fun LogsScreen(
                 entry = entry,
                 app = app,
                 showFullTime = showFullTime,
+                today = today,
                 onToggleTime = { showFullTime = !showFullTime },
                 onOpenApp = onOpenApp,
             )
@@ -209,6 +212,7 @@ private fun LogCard(
     entry: LogEntry,
     app: InstalledApp?,
     showFullTime: Boolean,
+    today: LocalDate,
     onToggleTime: () -> Unit,
     onOpenApp: (InstalledApp) -> Unit,
 ) {
@@ -281,7 +285,7 @@ private fun LogCard(
             },
         )
         LogTimeText(
-            text = formatLogEntryTime(entry, showFullTime),
+            text = formatLogEntryTime(entry, showFullTime, today),
             showFullTime = showFullTime,
             onClick = onToggleTime,
         )
@@ -388,16 +392,6 @@ private fun LogEntry.toInstalledAppOrNull(displayName: String): InstalledApp? {
       config = null,
       isInstalled = false,
   )
-}
-
-private fun formatLogEntryTime(entry: LogEntry, showFullTime: Boolean): String {
-  if (!showFullTime) return entry.timeText.ifBlank { "--:--" }
-  val timestamp = entry.timestamp.replace('T', ' ')
-  return when {
-    timestamp.length >= 16 -> timestamp.substring(0, 16)
-    timestamp.isNotBlank() -> timestamp
-    else -> entry.timeText.ifBlank { "--:--" }
-  }
 }
 
 private fun logEntryPrimaryPath(entry: LogEntry): String {
@@ -651,6 +645,7 @@ private fun LogOperationBadge(
 internal fun LogRow(
     entry: LogEntry,
     showFullTime: Boolean,
+    today: LocalDate,
     onToggleTime: () -> Unit,
 ) {
   Row(
@@ -697,7 +692,7 @@ internal fun LogRow(
       )
     }
     LogTimeText(
-        text = formatLogEntryTime(entry, showFullTime),
+        text = formatLogEntryTime(entry, showFullTime, today),
         showFullTime = showFullTime,
         onClick = onToggleTime,
     )
