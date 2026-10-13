@@ -152,7 +152,7 @@ internal fun LogsScreen(
         actions = {
           RoundIconAction(
               MiuixIcons.Tune,
-              "文件监视过滤",
+              "黑名单规则",
               { showFilters = true },
               size = 36.dp,
               iconSize = 17.dp,

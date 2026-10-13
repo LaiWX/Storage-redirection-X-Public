@@ -52,7 +52,7 @@ import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.Ok
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-// 文件监视过滤规则的编辑入口。
+// 黑名单规则的编辑入口。
 //
 // 这里只负责「规则怎么编辑、怎么校验」，不关心日志列表如何展示；日志页只需要在
 // 需要编辑时调用 FileMonitorFilterDialog，避免在 1000+ 行的日志页里跨职责查找。
@@ -98,7 +98,7 @@ internal fun FileMonitorFilterDialog(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
       Text(
-          "文件监视过滤",
+          "黑名单规则",
           modifier = Modifier.weight(1f),
           fontWeight = FontWeight.Black,
           fontSize = 17.sp,
@@ -111,6 +111,13 @@ internal fun FileMonitorFilterDialog(
           fontWeight = FontWeight.Bold,
       )
     }
+    Text(
+        "自黑名单生效后，命中规则的文件操作会被忽略记录（历史记录不受影响）",
+        modifier = Modifier.fillMaxWidth(),
+        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+    )
     MonitorFilterTabs(
         selected = selectedType,
         counts =
@@ -203,8 +210,8 @@ internal fun FileMonitorFilterDialog(
   }
   pendingRemoval?.let { removal ->
     CenteredDialog(
-        title = "删除过滤规则",
-        summary = "确认删除过滤规则“${removal.displayValue}”？",
+        title = "删除黑名单规则",
+        summary = "确认删除黑名单规则“${removal.displayValue}”？",
         show = show,
         onDismiss = { pendingRemoval = null },
     ) {
@@ -241,9 +248,9 @@ internal fun FileMonitorFilterDialog(
 }
 
 private enum class MonitorFilterType(val label: String, val description: String) {
-  Path("路径", "排除目录及其子路径，支持 * 和 ? 通配。"),
-  Operation("操作", "按操作名或模式过滤，支持 *、? 和意图后缀，例如 open*、open*:read。"),
-  Intent("意图", "按访问目的过滤，不受 open、openat 等具体操作名影响。"),
+  Path("路径", "排除目录及其子路径的记录，支持 * 和 ? 通配。"),
+  Operation("操作", "按操作名或模式排除记录，支持 *、? 和意图后缀，例如 open*、open*:read。"),
+  Intent("意图", "按访问目的排除记录，不受 open、openat 等具体操作名影响。"),
 }
 
 private data class MonitorFilterRemoval(val type: MonitorFilterType, val value: String) {
@@ -386,7 +393,7 @@ private fun validateMonitorFilterPathInput(raw: String): MonitorFilterPathValida
         text.trimStart('/').lowercase().let(::hasStorageRootPrefixForMonitorFilter) ->
             "不能带存储根目录，请输入相对路径"
         text.startsWith("/") -> "不能使用绝对路径，请输入相对路径"
-        text.startsWith("!") -> "过滤路径不支持排除前缀"
+        text.startsWith("!") -> "黑名单路径不支持排除前缀"
         text.length > 512 || '\u0000' in text -> "路径格式不正确"
         text.contains("..") -> "路径不能包含 . 或 .."
         else -> "路径包含非法字符"

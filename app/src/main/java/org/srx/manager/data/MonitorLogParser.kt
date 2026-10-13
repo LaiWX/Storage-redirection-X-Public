@@ -4,17 +4,14 @@ import org.srx.manager.root.isSafePackageName
 
 internal fun parseMonitorLogEntries(
     raw: String,
-    filters: FileMonitorFilters? = null,
     labelResolver: (String) -> String = { it },
 ): List<LogEntry> {
   val labelCache = mutableMapOf<String, String>()
-  val compiledFilters = filters?.let(::compileMonitorFilters)
   return raw.lineSequence()
       .filter { it.isNotBlank() }
       .mapNotNull { parseMonitorLogLine(it, labelCache, labelResolver) }
       .filterNot { it.path.substringAfterLast('/').matches(TempJsLogPathRegex) }
       .filterNot { it.isMediaStorePendingIntermediateRecord() }
-      .filterNot { compiledFilters != null && it.matchesMonitorFilters(compiledFilters) }
       .toList()
       .coalesceMonitorLogEntries()
       .asReversed()
@@ -589,105 +586,6 @@ private fun String.normalizedMonitorOperation(): String =
           "create"
       else it
     }
-
-private data class CompiledMonitorFilters(
-    val operations: List<String>,
-    val paths: List<CompiledMonitorPathRule>,
-)
-
-private data class CompiledMonitorPathRule(
-    val pattern: String,
-    val subtreeBase: String?,
-    val hasWildcard: Boolean,
-)
-
-private fun compileMonitorFilters(filters: FileMonitorFilters): CompiledMonitorFilters =
-    CompiledMonitorFilters(
-        operations =
-            filters.excludedOperations.mapNotNull { rule ->
-              rule.trim().lowercase().takeIf { it.isNotBlank() && '/' !in it }
-            },
-        paths =
-            filters.excludedPaths.mapNotNull { rule ->
-              val pattern =
-                  SrxConfigNormalizer.sanitizeMonitorFilterPath(rule, allowLegacyAbsolute = true)
-              pattern.takeIf(String::isNotBlank)?.let {
-                CompiledMonitorPathRule(
-                    pattern = it,
-                    subtreeBase = it.removeSuffix("/**").takeIf { base -> base != it },
-                    hasWildcard = it.hasMonitorWildcard(),
-                )
-              }
-            },
-    )
-
-private fun LogEntry.matchesMonitorFilters(filters: CompiledMonitorFilters): Boolean {
-  val operation = filterOperation.ifBlank { operation }.trim().lowercase()
-  val operationMatched =
-      operation.isNotBlank() &&
-          filters.operations.any { pattern -> wildcardMatches(pattern, operation) }
-  if (operationMatched) return true
-
-  val paths = listOf(path, landingPath, fromPath, backendPath)
-  return filters.paths.any { rule -> paths.any { path -> monitorPathFilterMatches(rule, path) } }
-}
-
-private fun monitorPathFilterMatches(rule: CompiledMonitorPathRule, path: String): Boolean {
-  val relative = monitorFilterRelativePath(path)
-  if (relative.isBlank()) return false
-  if (!rule.hasWildcard) {
-    return relative == rule.pattern || relative.startsWith("${rule.pattern}/")
-  }
-  if (wildcardMatches(rule.pattern, relative)) return true
-  return rule.subtreeBase?.let { base -> wildcardMatches(base, relative) } == true
-}
-
-private fun monitorFilterRelativePath(path: String): String {
-  var value =
-      normalizeMonitorLogPath(path).replace('\\', '/').replace(Regex("/+"), "/").removeSuffix("/")
-  if (value.isBlank()) return ""
-  value = value.replace(Regex("^/sdcard(?=/|$)"), "/storage/emulated/0")
-  value = value.replace(Regex("^/storage/self/primary(?=/|$)"), "/storage/emulated/0")
-  value =
-      value.replace(Regex("^/data/media/(\\d+)(?=/|$)")) { match ->
-        "/storage/emulated/${match.groupValues[1]}"
-      }
-  val match = Regex("^/storage/emulated/\\d+/(.+)$").find(value) ?: return ""
-  val relative = match.groupValues[1].trim('/')
-  if (relative.isBlank() || relative.split('/').any { it == "." || it == ".." }) return ""
-  return relative
-}
-
-private fun String.hasMonitorWildcard(): Boolean = '*' in this || '?' in this
-
-private fun wildcardMatches(pattern: String, value: String): Boolean {
-  var patternIndex = 0
-  var valueIndex = 0
-  var starIndex = -1
-  var starValueIndex = -1
-  while (valueIndex < value.length) {
-    when {
-      patternIndex < pattern.length &&
-          (pattern[patternIndex] == '?' || pattern[patternIndex] == value[valueIndex]) -> {
-        patternIndex += 1
-        valueIndex += 1
-      }
-      patternIndex < pattern.length && pattern[patternIndex] == '*' -> {
-        starIndex = patternIndex
-        patternIndex += 1
-        starValueIndex = valueIndex
-      }
-      starIndex >= 0 -> {
-        patternIndex = starIndex + 1
-        starValueIndex += 1
-        valueIndex = starValueIndex
-      }
-      else -> return false
-    }
-  }
-  while (patternIndex < pattern.length && pattern[patternIndex] == '*') patternIndex += 1
-  return patternIndex == pattern.length
-}
 
 private val TempJsLogPathRegex = Regex("^\\.[^/]+\\.js$", RegexOption.IGNORE_CASE)
 private val DiagnosticLogArchiveRegex =

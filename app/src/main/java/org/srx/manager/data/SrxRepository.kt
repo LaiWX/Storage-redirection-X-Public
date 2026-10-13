@@ -313,7 +313,7 @@ class SrxRepository(
   suspend fun readLogSnapshot(): MonitorLogSnapshot {
     val raw = fileStore.readTailWithBackups(FileMonitorLogPath, LogInitialLoadLines)
     val filters = readFileMonitorFilters()
-    val entries = withContext(Dispatchers.IO) { parseMonitorLogEntries(raw, filters) }
+    val entries = withContext(Dispatchers.IO) { parseMonitorLogEntries(raw) }
     return MonitorLogSnapshot(entries, filters)
   }
 

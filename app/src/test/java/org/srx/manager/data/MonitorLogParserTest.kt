@@ -464,11 +464,6 @@ class MonitorLogParserTest {
                 "2026-07-28 21:37:20|com.android.providers.media.module|com.coloros.gallery3d|OPEN|" +
                     "/storage/emulated/0/.MediaTrash/.mediaTrash|ret=131|errno=0|" +
                     "identify_method=caller|identify_reliability=high|op=open|op_filter=open:read|flags=0x84000",
-                filters =
-                    FileMonitorFilters(
-                        excludedPaths = emptyList(),
-                        excludedOperations = emptyList(),
-                    ),
             )
             .single()
     val writeEntry =
@@ -476,14 +471,12 @@ class MonitorLogParserTest {
                 "2026-07-28 21:39:05|com.android.providers.media.module|com.example.app|OPEN|" +
                     "/storage/emulated/0/Download/a.json|ret=131|errno=0|" +
                     "identify_method=caller|identify_reliability=high|op=open|op_filter=open:write|flags=0x20202",
-                filters = FileMonitorFilters(excludedPaths = emptyList()),
             )
             .single()
     val plainEntry =
         parseMonitorLogEntries(
                 "2026-07-28 21:39:06|com.example.app|com.example.app|OPEN|" +
                     "/storage/emulated/0/Download/b.json|ret=5|errno=0|op=open",
-                filters = FileMonitorFilters(excludedPaths = emptyList()),
             )
             .single()
 
@@ -965,7 +958,7 @@ class MonitorLogParserTest {
   }
 
   @Test
-  fun parserAppliesMonitorPathFiltersToBackendPath() {
+  fun preservesHistoricalRecordsWithPrivateBackendPath() {
     val raw =
         "2026-07-03 12:30:41|com.android.mtp,com.android.providers.downloads,com.android.providers.media,com.android.soundpicker|" +
             "com.android.providers.downloads|MKDIR|/storage/emulated/0/.xlDownload|" +
@@ -976,22 +969,20 @@ class MonitorLogParserTest {
     val entries =
         parseMonitorLogEntries(
             raw,
-            filters = FileMonitorFilters(excludedPaths = listOf("Android/data")),
         )
 
-    assertTrue(entries.isEmpty())
+    assertEquals(1, entries.size)
   }
 
   @Test
-  fun appliesOperationFiltersToExistingLogs() {
+  fun preservesHistoricalReadRecords() {
     val raw =
         "2026-07-03 12:30:41|com.example.app|com.example.app|OPEN|" +
             "/storage/emulated/0/Download/a.txt|ret=10|errno=0|op=open|op_filter=open:read"
 
-    val entries =
-        parseMonitorLogEntries(raw, filters = FileMonitorFilters(excludedPaths = emptyList()))
+    val entries = parseMonitorLogEntries(raw)
 
-    assertTrue(entries.isEmpty())
+    assertEquals(1, entries.size)
   }
 
   @Test
@@ -1001,39 +992,15 @@ class MonitorLogParserTest {
             "/storage/emulated/0/Download/a.txt|ret=8|errno=0|" +
             "op=openat2|op_filter=openat2:create|flags=0x40"
 
-    val entry =
-        parseMonitorLogEntries(raw, filters = FileMonitorFilters(excludedPaths = emptyList()))
-            .single()
+    val entry = parseMonitorLogEntries(raw).single()
 
     assertEquals("openat2", entry.operation)
     assertEquals("openat2:create", entry.filterOperation)
     assertEquals("create", entry.operationIntent)
-    assertTrue(
-        parseMonitorLogEntries(
-                raw,
-                filters =
-                    FileMonitorFilters(
-                        excludedPaths = emptyList(),
-                        excludedOperations = listOf("*:create"),
-                    ),
-            )
-            .isEmpty()
-    )
-    assertFalse(
-        parseMonitorLogEntries(
-                raw,
-                filters =
-                    FileMonitorFilters(
-                        excludedPaths = emptyList(),
-                        excludedOperations = listOf("open*:read"),
-                    ),
-            )
-            .isEmpty()
-    )
   }
 
   @Test
-  fun preservesWildcardFilterSemantics() {
+  fun preservesHistoricalRecordsAcrossPathsAndIntents() {
     val raw =
         listOf(
                 monitorLine("open:create", "Download/alpha/file.txt"),
@@ -1045,14 +1012,10 @@ class MonitorLogParserTest {
     val entries =
         parseMonitorLogEntries(
             raw,
-            filters =
-                FileMonitorFilters(
-                    excludedPaths = listOf("Download/al**a/file.?xt", "Android/data/**"),
-                    excludedOperations = listOf("**:create"),
-                ),
         )
 
-    assertEquals(listOf("/storage/emulated/0/Download/beta/file.txt"), entries.map { it.path })
+    assertEquals(3, entries.size)
+    assertEquals(setOf("create", "read", ""), entries.map { it.operationIntent }.toSet())
   }
 
   private fun monitorLine(operation: String, relativePath: String): String =

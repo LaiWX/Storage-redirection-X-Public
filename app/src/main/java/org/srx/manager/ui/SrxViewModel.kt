@@ -780,7 +780,7 @@ class SrxViewModel(
 
   fun refreshFileMonitorFilters() {
     viewModelScope.launch {
-      loadOrReport("加载文件监视过滤规则", "加载文件监视过滤规则失败") { repository.readFileMonitorFilters() }
+      loadOrReport("加载黑名单规则", "加载黑名单规则失败") { repository.readFileMonitorFilters() }
           ?.let { filters -> _state.value = _state.value.copy(fileMonitorFilters = filters) }
     }
   }
@@ -793,9 +793,9 @@ class SrxViewModel(
       val ok = monitorFiltersSaveMutex.withLock { repository.writeFileMonitorFilters(filters) }
       if (ok) {
         _state.value = _state.value.copy(fileMonitorFilters = filters)
-        if (!silent) showMessage("过滤配置已保存")
+        if (!silent) showMessage("黑名单规则已保存")
       } else {
-        showMessage("保存过滤配置失败")
+        showMessage("保存黑名单规则失败")
       }
     }
   }
