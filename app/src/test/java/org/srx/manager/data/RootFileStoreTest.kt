@@ -65,39 +65,12 @@ class RootFileStoreTest {
   }
 
   @Test
-  fun readAllWithBackupsSortsNumericSuffixes() = runBlocking {
+  fun readsWholeMonitorMainFile() = runBlocking {
     val shell = CapturingShell(ShellResult(0, "log", ""))
     val store = RootFileStore(shell)
-
-    val output = store.readAllWithBackups(FileMonitorLogPath)
-
-    assertEquals("log", output)
+    assertEquals("log", store.read(FileMonitorLogPath))
     assertEquals(
-        "base=${shellQuote(FileMonitorLogPath)}; " +
-            "{ for f in \"\$base\".*; do [ -f \"\$f\" ] || continue; suffix=\"\${f##*.}\"; " +
-            "case \"\$suffix\" in ''|*[!0-9]*) continue;; esac; " +
-            "printf '%s\\t%s\\n' \"\$suffix\" \"\$f\"; done | sort -rn | " +
-            "while IFS=\"\$(printf '\\t')\" read -r _ f; do cat \"\$f\"; done; " +
-            "cat \"\$base\" 2>/dev/null; }",
-        shell.invocations.single().command,
-    )
-  }
-
-  @Test
-  fun readTailWithBackupsClampsLines() = runBlocking {
-    val shell = CapturingShell(ShellResult(0, "log", ""))
-    val store = RootFileStore(shell)
-
-    val output = store.readTailWithBackups(FileMonitorLogPath, 50_000)
-
-    assertEquals("log", output)
-    assertEquals(
-        "base=${shellQuote(FileMonitorLogPath)}; " +
-            "{ for f in \"\$base\".*; do [ -f \"\$f\" ] || continue; suffix=\"\${f##*.}\"; " +
-            "case \"\$suffix\" in ''|*[!0-9]*) continue;; esac; " +
-            "printf '%s\\t%s\\n' \"\$suffix\" \"\$f\"; done | sort -rn | " +
-            "while IFS=\"\$(printf '\\t')\" read -r _ f; do cat \"\$f\"; done; " +
-            "cat \"\$base\" 2>/dev/null; } | tail -n 10000",
+        "cat ${shellQuote(FileMonitorLogPath)} 2>/dev/null",
         shell.invocations.single().command,
     )
   }

@@ -64,92 +64,6 @@ class MonitorLogParserTest {
   }
 
   @Test
-  fun prefersCallerOverObservation() {
-    val raw =
-        listOf(
-                "2026-10-03 10:38:56|com.android.providers.media.module|com.android.providers.media.module|CREATE|" +
-                    "/storage/emulated/0/Pictures/.gs_fs0/.0.jpg|ret=0|errno=0|" +
-                    "identify_method=media_provider_fallback|identify_reliability=fallback|" +
-                    "event_role=observation|correlation_id=p1-1|op=inotify|source=allowed_real_path|" +
-                    "observer_package=com.android.providers.media.module",
-                "2026-10-03 10:38:56|com.android.providers.media.module|com.taobao.idlefish|OPEN|" +
-                    "/storage/emulated/0/Pictures/.gs_fs0/.0.jpg|ret=194|errno=0|" +
-                    "identify_method=caller|identify_reliability=high|event_role=request|" +
-                    "correlation_id=p1-1|op=open|op_filter=open:create|flags=0x20242",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("com.taobao.idlefish", entry.callerPackage)
-    assertEquals("request", entry.eventRole)
-    assertEquals("caller", entry.identifyMethod)
-    assertEquals(1, entry.observationCount)
-    assertEquals("com.android.providers.media.module", entry.observerPackage)
-  }
-
-  @Test
-  fun coalescesProviderMkdirWithUncorrelatedObservation() {
-    val raw =
-        listOf(
-                "2026-10-03 13:29:40|com.android.providers.media.module|com.taobao.idlefish|MKDIR|" +
-                    "/storage/emulated/0/Pictures/.gs/|ret=0|errno=0|" +
-                    "identify_method=provider_mkdir|identify_reliability=high|event_role=request|" +
-                    "op=mkdir|op_filter=mkdir|source=media_provider_java",
-                "2026-10-03 13:29:40|com.android.providers.media.module|com.android.providers.media.module|CREATE|" +
-                    "/storage/emulated/0/Pictures/.gs|ret=0|errno=0|" +
-                    "identify_method=media_provider_fallback|identify_reliability=fallback|" +
-                    "event_role=observation|op=inotify|source=allowed_real_path|" +
-                    "observer_package=srx_daemon",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw)
-    assertEquals(
-        entries.joinToString("; ") {
-          "${it.eventRole}/${it.identifyMethod}/${it.path}/${it.timestamp}"
-        },
-        1,
-        entries.size,
-    )
-    val entry = entries.single()
-
-    assertEquals("com.taobao.idlefish", entry.packageName)
-    assertEquals("provider_mkdir", entry.identifyMethod)
-    assertEquals("request", entry.eventRole)
-    assertEquals(1, entry.observationCount)
-  }
-
-  @Test
-  fun coalescesMappedFuseRequestWithInotifyObservation() {
-    val raw =
-        listOf(
-                "2026-10-03 13:30:12|com.tencent.mobileqq|com.tencent.mobileqq|OPEN|" +
-                    "/storage/emulated/0/Download/QQ/storage.redirect.x.zip|ret=0|errno=0|" +
-                    "identify_method=fuse_redirect|identify_reliability=high|event_role=request|" +
-                    "op=open:write|source=path_mapping|" +
-                    "backend=/data/media/0/Download/第三方下载/QQ/storage.redirect.x.zip",
-                "2026-10-03 13:30:12|com.tencent.mobileqq|com.tencent.mobileqq|OPEN|" +
-                    "/storage/emulated/0/Download/QQ/storage.redirect.x.zip|ret=0|errno=0|" +
-                    "identify_method=daemon_inotify|identify_reliability=medium|event_role=observation|" +
-                    "op=inotify|source=path_mapping|observer_package=srx_daemon|" +
-                    "backend=/data/media/0/Download/第三方下载/QQ/storage.redirect.x.zip|" +
-                    "from=/storage/emulated/0/Android/data/com.tencent.mobileqq/Tencent/QQfile_recv/storage.redirect.x.zip",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw)
-
-    assertEquals(1, entries.size)
-    val entry = entries.single()
-    assertEquals("com.tencent.mobileqq", entry.packageName)
-    assertEquals("fuse_redirect", entry.identifyMethod)
-    assertEquals("request", entry.eventRole)
-    assertEquals(1, entry.observationCount)
-    assertEquals("srx_daemon", entry.observerPackage)
-  }
-
-  @Test
   fun parsesEntriesBeyondPreviousPreviewLimit() {
     val raw =
         (0..500).joinToString("\n") { index ->
@@ -178,29 +92,8 @@ class MonitorLogParserTest {
     assertEquals("open", entry.operation)
     assertEquals("create", entry.operationIntent)
     assertEquals("带创建意图的文件打开", entry.action)
-    assertEquals("/storage/emulated/0/DCIM/pending", entry.path)
+    assertEquals("file:///storage/emulated/0/DCIM/.pending.js", entry.path)
     assertTrue(entry.ok)
-  }
-
-  @Test
-  fun coalescesSameMinutePath() {
-    val raw =
-        listOf(
-                "2026-06-10 10:20:01.000|com.android.providers.media.module|com.android.providers.media.module|open|" +
-                    "/storage/emulated/0/DCIM/a.jpg|op=open:create|ret=3",
-                "2026-06-10 10:20:20.000|com.android.providers.media.module|com.example.camera|open|" +
-                    "/storage/emulated/10/DCIM/a.jpg|op=open:create|ret=3|from=/data/media/10/DCIM/a.jpg|" +
-                    "identify_method=caller|identify_reliability=high",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw)
-
-    assertEquals(1, entries.size)
-    val entry = entries.single()
-    assertEquals("com.example.camera", entry.packageName)
-    assertEquals("com.example.camera", entry.callerPackage)
-    assertEquals("/data/media/10/DCIM/a.jpg", entry.fromPath)
   }
 
   @Test
@@ -225,144 +118,6 @@ class MonitorLogParserTest {
   }
 
   @Test
-  fun coalescesAppOpenWriteBeforeProviderCreate() {
-    val raw =
-        listOf(
-                "2026-06-23 12:10:04|com.android.providers.media.module|com.android.providers.media.module|CREATE|" +
-                    "/storage/emulated/0/Download/Nnngram/save.jpg|" +
-                    "ret=0|errno=0|identify_method=media_provider_fallback|identify_reliability=fallback|" +
-                    "op=inotify|source=public_root|watch_package=xyz.nextalone.nnngram",
-                "2026-06-23 12:10:03|xyz.nextalone.nnngram|xyz.nextalone.nnngram|OPEN|" +
-                    "/storage/emulated/0/Download/Nnngram/save.jpg|" +
-                    "ret=5|errno=0|identify_method=caller|identify_reliability=high|" +
-                    "op=open|op_filter=open:write|flags=0x8001",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw) { "Label:$it" }
-
-    assertEquals(1, entries.size)
-    val entry = entries.single()
-    assertEquals("xyz.nextalone.nnngram", entry.packageName)
-    assertEquals("Label:xyz.nextalone.nnngram", entry.label)
-    assertEquals("open", entry.operation)
-    assertEquals("write", entry.operationIntent)
-    assertEquals("caller", entry.identifyMethod)
-  }
-
-  @Test
-  fun parserCoalescesFuseCreateAheadOfNormalCreate() {
-    val raw =
-        listOf(
-                "2026-06-23 12:20:03|com.tencent.mobileqq|com.tencent.mobileqq|CREATE|" +
-                    "/storage/emulated/0/Download/QQ/save.jpg|" +
-                    "ret=0|errno=0|identify_method=daemon_inotify|identify_reliability=medium|" +
-                    "op=inotify|source=redirect_root|" +
-                    "backend=/data/media/0/Android/data/com.tencent.mobileqq/sdcard/Download/QQ/save.jpg|" +
-                    "from=/storage/emulated/0/Download/QQ/save.jpg",
-                "2026-06-23 12:20:03|com.tencent.mobileqq|com.tencent.mobileqq|CREATE|" +
-                    "/storage/emulated/0/Download/QQ/save.jpg|" +
-                    "ret=0|errno=0|identify_method=fuse_redirect|identify_reliability=high|" +
-                    "op=fuse_create|source=fuse_redirect|backend=/data/media/0/Android/data/com.tencent.mobileqq/sdcard/Download/QQ/save.jpg",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw) { "Label:$it" }
-
-    assertEquals(1, entries.size)
-    val entry = entries.single()
-    assertEquals("com.tencent.mobileqq", entry.packageName)
-    assertEquals("Label:com.tencent.mobileqq", entry.label)
-    assertEquals("fuse_create", entry.operation)
-    assertEquals("fuse_redirect", entry.identifyMethod)
-    assertEquals("fuse_redirect", entry.source)
-  }
-
-  @Test
-  fun coalescesFuseCreateWithBackendInotify() {
-    val raw =
-        listOf(
-                "2026-06-23 18:33:13|com.tencent.mobileqq|com.tencent.mobileqq|CREATE|" +
-                    "/storage/emulated/0/Download/QQ/storage.redirect.x.zip|" +
-                    "ret=0|errno=0|identify_method=fuse_redirect|identify_reliability=high|" +
-                    "op=fuse_create|source=fuse_redirect|" +
-                    "backend=/data/media/0/Download/第三方下载/QQ/storage.redirect.x.zip",
-                "2026-06-23 18:33:17|com.tencent.mobileqq|com.tencent.mobileqq|CREATE|" +
-                    "/storage/emulated/0/Download/第三方下载/QQ/storage.redirect.x.zip|" +
-                    "ret=0|errno=0|identify_method=owner_uid|identify_reliability=high|" +
-                    "op=inotify|source=path_mapping|mask=0x100|" +
-                    "backend=/data/media/0/Download/第三方下载/QQ/storage.redirect.x.zip|" +
-                    "from=/storage/emulated/0/Download/QQ/storage.redirect.x.zip",
-                "2026-06-23 18:33:17|com.tencent.mobileqq|com.tencent.mobileqq|CREATE|" +
-                    "/storage/emulated/0/Download/第三方下载/QQ/storage.redirect.x.zip|" +
-                    "ret=0|errno=0|identify_method=owner_uid|identify_reliability=high|" +
-                    "op=inotify|source=read_only_path|mask=0x100|" +
-                    "backend=/data/media/0/Download/第三方下载/QQ/storage.redirect.x.zip",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("com.tencent.mobileqq", entry.packageName)
-    assertEquals("fuse_redirect", entry.identifyMethod)
-    assertEquals("/data/media/0/Download/第三方下载/QQ/storage.redirect.x.zip", entry.backendPath)
-  }
-
-  @Test
-  fun coalescesFuseCreateWithSameSecondWrite() {
-    val raw =
-        listOf(
-                "2026-10-04 09:08:17|com.taobao.idlefish|com.taobao.idlefish|CREATE|" +
-                    "/storage/emulated/0/Pictures/.gs/com.taobao.idlefish/.gs_fs0/0/a.jpg|" +
-                    "ret=0|errno=0|identify_method=fuse_redirect|identify_reliability=high|" +
-                    "op=fuse_create|source=fuse_redirect|" +
-                    "backend=/data/media/0/Pictures/.gs/com.taobao.idlefish/.gs_fs0/0/a.jpg",
-                "2026-10-04 09:08:17|com.taobao.idlefish|com.taobao.idlefish|WRITE|" +
-                    "/storage/emulated/0/Pictures/.gs/com.taobao.idlefish/.gs_fs0/0/a.jpg|" +
-                    "ret=0|errno=0|identify_method=fuse_redirect|identify_reliability=high|" +
-                    "event_role=request|op=write|source=fuse_redirect|" +
-                    "backend=/data/media/0/Pictures/.gs/com.taobao.idlefish/.gs_fs0/0/a.jpg",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw)
-
-    assertEquals(1, entries.size)
-    val entry = entries.single()
-    assertEquals("com.taobao.idlefish", entry.packageName)
-    assertEquals("fuse_create", entry.operation)
-    assertEquals("创建并写入", entry.action)
-  }
-
-  @Test
-  fun prefersMappedObservationOverFallback() {
-    val raw =
-        listOf(
-                "2026-10-04 07:12:08|com.tencent.mobileqq|com.tencent.mobileqq|CREATE|" +
-                    "/storage/emulated/0/Download/第三方下载/QQ/nt_qq_cab28b4c420bb9feb8d24642887f7579|" +
-                    "ret=0|errno=0|identify_method=daemon_inotify|identify_reliability=medium|" +
-                    "event_role=observation|op=inotify|source=path_mapping|mask=0x40000100|" +
-                    "backend=/data/media/0/Download/第三方下载/QQ/nt_qq_cab28b4c420bb9feb8d24642887f7579|" +
-                    "from=/storage/emulated/0/Android/data/com.tencent.mobileqq/Tencent/QQfile_recv/nt_qq_cab28b4c420bb9feb8d24642887f7579|" +
-                    "observer_package=srx_daemon",
-                "2026-10-04 07:12:08|com.android.providers.media.module|com.android.providers.media.module|CREATE|" +
-                    "/storage/emulated/0/Download/第三方下载/QQ/nt_qq_cab28b4c420bb9feb8d24642887f7579|" +
-                    "ret=0|errno=0|identify_method=media_provider_fallback|identify_reliability=fallback|" +
-                    "event_role=observation|op=inotify|source=read_only_path|mask=0x40000100|" +
-                    "backend=/data/media/0/Download/第三方下载/QQ/nt_qq_cab28b4c420bb9feb8d24642887f7579|" +
-                    "watch_package=com.aliyun.tongyi|observer_package=srx_daemon",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("com.tencent.mobileqq", entry.packageName)
-    assertEquals("daemon_inotify", entry.identifyMethod)
-    assertEquals("path_mapping", entry.source)
-    assertEquals("observation", entry.eventRole)
-  }
-
-  @Test
   fun keepsRequestPathForProviderOpen() {
     val raw =
         listOf(
@@ -379,7 +134,9 @@ class MonitorLogParserTest {
             )
             .joinToString("\n")
 
-    val entry = parseMonitorLogEntries(raw).single()
+    val entries = parseMonitorLogEntries(raw)
+    assertEquals(2, entries.size)
+    val entry = entries.first()
 
     assertEquals("com.tencent.mm", entry.packageName)
     assertEquals("inotify", entry.operation)
@@ -389,46 +146,6 @@ class MonitorLogParserTest {
         "/storage/emulated/0/Download/Weixin/storage.redirect.x-v1.2.55-local.zip",
         entry.fromPath,
     )
-  }
-
-  @Test
-  fun parserDropsMediaStorePendingIntermediateRecords() {
-    val raw =
-        listOf(
-                "2026-06-26 17:24:30|com.android.providers.media.module|com.tencent.mm|OPEN|" +
-                    "/storage/emulated/0/Download/Weixin/.pending-1783070670-storage.redirect.x-v1.2.55-local.zip|" +
-                    "ret=190|errno=0|identify_method=path_config|identify_reliability=medium|" +
-                    "op=open|op_filter=open:create|flags=0x88042",
-                "2026-06-26 17:24:30|com.android.providers.media.module|com.tencent.mm|OPEN|" +
-                    "/storage/emulated/0/Download/第三方下载/微信/.pending-1783070670-storage.redirect.x-v1.2.55-local.zip|" +
-                    "ret=-1|errno=2|identify_method=path_config|identify_reliability=medium|" +
-                    "op=open|op_filter=open:write|flags=0x28002|" +
-                    "from=/storage/emulated/0/Download/Weixin/.pending-1783070670-storage.redirect.x-v1.2.55-local.zip|" +
-                    "source=path_mapping",
-                "2026-06-26 17:24:30|com.android.providers.media.module|com.tencent.mm|OPEN|" +
-                    "/storage/emulated/0/Download/Weixin/.pending-1783070670-storage.redirect.x-v1.2.55-local.zip|" +
-                    "ret=-1|errno=13|identify_method=path_config|identify_reliability=medium|" +
-                    "op=open|op_filter=open:create|flags=0x88042",
-                "2026-06-26 17:24:31|com.tencent.mm|com.tencent.mm|CREATE|" +
-                    "/storage/emulated/0/Download/第三方下载/微信/storage.redirect.x-v1.2.55-local.zip|" +
-                    "ret=0|errno=0|identify_method=watch_package|identify_reliability=medium|" +
-                    "op=inotify|source=path_mapping|mask=0x100|" +
-                    "backend=/data/media/0/Download/第三方下载/微信/storage.redirect.x-v1.2.55-local.zip|" +
-                    "from=/storage/emulated/0/Download/Weixin/storage.redirect.x-v1.2.55-local.zip",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals(
-        "/storage/emulated/0/Download/第三方下载/微信/storage.redirect.x-v1.2.55-local.zip",
-        entry.path,
-    )
-    assertEquals(
-        "/storage/emulated/0/Download/Weixin/storage.redirect.x-v1.2.55-local.zip",
-        entry.fromPath,
-    )
-    assertEquals("path_mapping", entry.source)
   }
 
   @Test
@@ -505,7 +222,7 @@ class MonitorLogParserTest {
   }
 
   @Test
-  fun parserSkipsMonitorWatchRecordsAndMalformedLines() {
+  fun parserSkipsOnlyMalformedLines() {
     val raw =
         listOf(
                 "malformed",
@@ -516,9 +233,9 @@ class MonitorLogParserTest {
 
     val entries = parseMonitorLogEntries(raw)
 
-    assertEquals(1, entries.size)
-    assertEquals("inotify", entries.single().operation)
-    assertEquals("/storage/emulated/0/Download/b.txt", entries.single().path)
+    assertEquals(2, entries.size)
+    assertEquals("inotify", entries.first().operation)
+    assertEquals("/storage/emulated/0/Download/b.txt", entries.first().path)
   }
 
   @Test
@@ -655,7 +372,9 @@ class MonitorLogParserTest {
             )
             .joinToString("\n")
 
-    val entry = parseMonitorLogEntries(raw).single()
+    val entries = parseMonitorLogEntries(raw)
+    assertEquals(2, entries.size)
+    val entry = entries.first()
 
     assertTrue(entry.isModuleWebUiExport)
     assertEquals("storage.redirect.x", entry.packageName)
@@ -696,161 +415,6 @@ class MonitorLogParserTest {
   }
 
   @Test
-  fun coalescesManagerArchiveBeforeWebUi() {
-    val raw =
-        listOf(
-                "2026-06-18 18:30:22|com.android.providers.media.module|-|OPEN|" +
-                    "/storage/emulated/0/Download/第三方下载/storage-redirect-x-logs-20260618-183022.tar.gz|" +
-                    "ret=258|errno=0|identify_method=unknown|identify_reliability=none|op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-18 18:30:22|com.android.externalstorage|org.srx.manager|OPEN|" +
-                    "/storage/emulated/0/Download/第三方下载/storage-redirect-x-logs-20260618-183022.tar.gz|" +
-                    "ret=122|errno=0|identify_method=caller|identify_reliability=high|op=open|op_filter=open:create|flags=0xc2",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw) { "Label:$it" }
-
-    assertEquals(1, entries.size)
-    val entry = entries.single()
-    assertFalse(entry.isModuleWebUiExport)
-    assertEquals("org.srx.manager", entry.packageName)
-    assertEquals("Label:org.srx.manager", entry.label)
-  }
-
-  @Test
-  fun coalescesManagerArchiveAcrossMappedDownload() {
-    val raw =
-        listOf(
-                "2026-06-18 18:30:22|com.android.providers.media.module|-|OPEN|" +
-                    "/storage/emulated/0/Download/storage-redirect-x-logs-20260618-183022.tar.gz|" +
-                    "ret=258|errno=0|identify_method=unknown|identify_reliability=none|op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-18 18:30:22|com.android.externalstorage|org.srx.manager|OPEN|" +
-                    "/storage/emulated/0/Download/第三方下载/storage-redirect-x-logs-20260618-183022.tar.gz|" +
-                    "ret=122|errno=0|identify_method=caller|identify_reliability=high|op=open|op_filter=open:create|flags=0xc2",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw)
-
-    assertEquals(1, entries.size)
-    assertFalse(entries.single().isModuleWebUiExport)
-    assertEquals("org.srx.manager", entries.single().packageName)
-  }
-
-  @Test
-  fun usesAppExportMarkerBeforeProvider() {
-    val raw =
-        listOf(
-                "2026-06-24 18:30:22|com.android.providers.media.module|-|OPEN|" +
-                    "/storage/emulated/0/Download/备份/storage-redirect-x-logs-20260624-183022.tar.gz|" +
-                    "ret=258|errno=0|identify_method=unknown|identify_reliability=none|op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-24 18:30:22|org.srx.manager|org.srx.manager|OPEN|" +
-                    "/storage/emulated/0/Download/备份/storage-redirect-x-logs-20260624-183022.tar.gz|" +
-                    "ret=0|errno=0|identify_method=caller|identify_reliability=high|" +
-                    "op=provider_open|op_filter=provider_open:write|source=app_export|export_kind=diagnostic",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw) { "Label:$it" }
-
-    assertEquals(1, entries.size)
-    val entry = entries.single()
-    assertFalse(entry.isModuleWebUiExport)
-    assertEquals("org.srx.manager", entry.packageName)
-    assertEquals("Label:org.srx.manager", entry.label)
-    assertEquals("caller", entry.identifyMethod)
-  }
-
-  @Test
-  fun prefersPrivateOwnerOverDownloadProvider() {
-    val raw =
-        listOf(
-                "2026-06-18 18:30:02|com.android.providers.media.module|com.eg.android.AlipayGphone|OPEN|" +
-                    "/storage/emulated/0/Download/搞机备份/模块设置备份/XRadiant_backup_20260618_183000.json|" +
-                    "ret=256|errno=0|identify_method=recent_private_owner|identify_reliability=medium|" +
-                    "op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-18 18:30:02|com.android.mtp,com.android.providers.downloads,com.android.providers.media,com.android.soundpicker|" +
-                    "com.android.providers.downloads|OPEN|" +
-                    "/storage/emulated/0/Download/搞机备份/模块设置备份/XRadiant_backup_20260618_183000.json|" +
-                    "ret=150|errno=0|identify_method=java_stack|identify_reliability=medium|op=open|op_filter=open:create|flags=0xc2",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw)
-
-    assertEquals(1, entries.size)
-    assertEquals("com.eg.android.AlipayGphone", entries.single().packageName)
-    assertEquals("recent_private_owner", entries.single().identifyMethod)
-  }
-
-  @Test
-  fun coalescesSafCreateAndAnonymousExport() {
-    val raw =
-        listOf(
-                "2026-06-23 17:07:53|com.android.providers.media.module|com.eg.android.AlipayGphone|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_170751.json|" +
-                    "ret=212|errno=0|identify_method=recent_private_owner|identify_reliability=medium|" +
-                    "op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-23 17:07:53|com.android.providers.media.module|-|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_170751.json|" +
-                    "ret=212|errno=0|identify_method=unknown|identify_reliability=none|" +
-                    "op=open|op_filter=open:write|flags=0x20202",
-            )
-            .joinToString("\n")
-
-    val entries = parseMonitorLogEntries(raw)
-
-    assertEquals(1, entries.size)
-    assertEquals("com.eg.android.AlipayGphone", entries.single().packageName)
-    assertEquals("recent_private_owner", entries.single().identifyMethod)
-  }
-
-  @Test
-  fun prefersProviderOpenOverPrivateOwner() {
-    val raw =
-        listOf(
-                "2026-06-23 17:07:53|com.android.providers.media.module|com.eg.android.AlipayGphone|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_170751.json|" +
-                    "ret=212|errno=0|identify_method=recent_private_owner|identify_reliability=medium|" +
-                    "op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-23 17:07:53|com.android.providers.media.module|com.leo.xposed.xradiant|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_170751.json|" +
-                    "ret=212|errno=0|identify_method=provider_open|identify_reliability=high|" +
-                    "op=open|op_filter=open:write|flags=0x20202",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("com.leo.xposed.xradiant", entry.packageName)
-    assertEquals("provider_open", entry.identifyMethod)
-  }
-
-  @Test
-  fun prefersSafOpenOverEarlierProviderCreate() {
-    val raw =
-        listOf(
-                "2026-06-24 12:06:52|com.android.providers.media.module|com.android.providers.media.module|OPEN|" +
-                    "/storage/emulated/0/Download/备份/storage-redirect-x-backup-20260624-120650.srxbak.zip|" +
-                    "ret=186|errno=0|identify_method=unknown|identify_reliability=none|" +
-                    "op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-24 12:06:53|com.android.externalstorage|org.srx.manager|OPEN|" +
-                    "/storage/emulated/0/Download/备份/storage-redirect-x-backup-20260624-120650.srxbak.zip|" +
-                    "ret=0|errno=0|identify_method=provider_open|identify_reliability=high|" +
-                    "op=provider_open|op_filter=provider_open:write|source=saf_provider|caller_uid=10357",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("org.srx.manager", entry.packageName)
-    assertEquals("org.srx.manager", entry.callerPackage)
-    assertEquals("provider_open", entry.identifyMethod)
-    assertEquals("provider_open", entry.operation)
-    assertEquals("write", entry.operationIntent)
-  }
-
-  @Test
   fun keepsProviderOperationSuffixes() {
     val readEntry =
         parseMonitorLogEntries(
@@ -876,48 +440,6 @@ class MonitorLogParserTest {
   }
 
   @Test
-  fun prefersPrivateCallerOverAnonymousExport() {
-    val raw =
-        listOf(
-                "2026-06-23 18:33:31|com.android.providers.media.module|com.leo.xposed.xradiant|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_183330.json|" +
-                    "ret=206|errno=0|identify_method=recent_private_caller|identify_reliability=medium|" +
-                    "op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-23 18:33:31|com.android.providers.media.module|-|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_183330.json|" +
-                    "ret=208|errno=0|identify_method=unknown|identify_reliability=none|" +
-                    "op=open|op_filter=open:write|flags=0x20202",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("com.leo.xposed.xradiant", entry.packageName)
-    assertEquals("recent_private_caller", entry.identifyMethod)
-  }
-
-  @Test
-  fun prefersPrivateCallerOverPrivateOwner() {
-    val raw =
-        listOf(
-                "2026-06-23 18:33:31|com.android.providers.media.module|com.eg.android.AlipayGphone|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_183330.json|" +
-                    "ret=206|errno=0|identify_method=recent_private_owner|identify_reliability=medium|" +
-                    "op=open|op_filter=open:create|flags=0x200c2",
-                "2026-06-23 18:33:31|com.android.providers.media.module|com.leo.xposed.xradiant|OPEN|" +
-                    "/storage/emulated/0/Download/XRadiant_backup_20260623_183330.json|" +
-                    "ret=208|errno=0|identify_method=recent_private_caller|identify_reliability=medium|" +
-                    "op=open|op_filter=open:write|flags=0x20202",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("com.leo.xposed.xradiant", entry.packageName)
-    assertEquals("recent_private_caller", entry.identifyMethod)
-  }
-
-  @Test
   fun ignoresAllowedPathWatcherContext() {
     val raw =
         "2026-06-18 04:35:21|com.android.providers.media.module|com.android.providers.media.module|CREATE|" +
@@ -930,31 +452,6 @@ class MonitorLogParserTest {
 
     assertEquals("com.android.providers.media.module", entry.packageName)
     assertEquals("cn.wps.moffice_eng", entry.watchPackage)
-  }
-
-  @Test
-  fun coalescesMappedDownloadBeforeWatchContext() {
-    val raw =
-        listOf(
-                "2026-06-18 04:35:21|com.android.providers.downloads.ui|com.android.providers.downloads.ui|CREATE|" +
-                    "/storage/emulated/0/Download/第三方下载/DLManager/thumbs|" +
-                    "ret=0|errno=0|identify_method=watch_package|identify_reliability=medium|op=inotify|" +
-                    "source=path_mapping|mask=0x40000100|" +
-                    "backend=/data/media/0/Download/第三方下载/DLManager/thumbs|" +
-                    "from=/storage/emulated/0/Download/DLManager/thumbs",
-                "2026-06-18 04:35:21|com.android.providers.media.module|com.android.providers.media.module|CREATE|" +
-                    "/storage/emulated/0/Download/第三方下载/DLManager/thumbs|" +
-                    "ret=0|errno=0|identify_method=owner_uid|identify_reliability=high|op=inotify|" +
-                    "source=allowed_real_path|mask=0x40000100|" +
-                    "backend=/data/media/0/Download/第三方下载/DLManager/thumbs|watch_package=cn.wps.moffice_eng",
-            )
-            .joinToString("\n")
-
-    val entry = parseMonitorLogEntries(raw).single()
-
-    assertEquals("com.android.providers.downloads.ui", entry.packageName)
-    assertEquals("/storage/emulated/0/Download/DLManager/thumbs", entry.fromPath)
-    assertEquals("path_mapping", entry.source)
   }
 
   @Test
@@ -1016,6 +513,46 @@ class MonitorLogParserTest {
 
     assertEquals(3, entries.size)
     assertEquals(setOf("create", "read", ""), entries.map { it.operationIntent }.toSet())
+  }
+
+  @Test
+  fun preservesIndependentRepeatedEvents() {
+    val request =
+        monitorLine("open:create", "Download/a.txt") + "|event_role=request|correlation_id=c1"
+    val observation =
+        monitorLine("inotify", "Download/a.txt") + "|event_role=observation|correlation_id=c1"
+    assertEquals(
+        3,
+        parseMonitorLogEntries(listOf(request, request, observation).joinToString("\n")).size,
+    )
+  }
+
+  @Test
+  fun readsProducerAggregationFieldsWithoutReaggregating() {
+    val raw =
+        monitorLine("fuse_create", "Download/a.txt") +
+            "|combined_action=create_write|observation_count=3|observer_package=srx_daemon"
+    val entry = parseMonitorLogEntries(raw).single()
+    assertEquals("创建并写入", entry.action)
+    assertEquals(3, entry.observationCount)
+    assertEquals("srx_daemon", entry.observerPackage)
+  }
+
+  @Test
+  fun keepsLegalPendingNamesAndJavascriptNamesAsWritten() {
+    val raw =
+        listOf(
+                monitorLine("open:create", "Download/.pending-123-test.txt"),
+                monitorLine("open:create", "Download/.test.js"),
+            )
+            .joinToString("\n")
+    assertEquals(
+        listOf(
+            "/storage/emulated/0/Download/.test.js",
+            "/storage/emulated/0/Download/.pending-123-test.txt",
+        ),
+        parseMonitorLogEntries(raw).map { it.path },
+    )
   }
 
   private fun monitorLine(operation: String, relativePath: String): String =

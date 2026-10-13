@@ -23,7 +23,7 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -92,49 +92,10 @@ internal fun LogsScreen(
   var showFilters by remember { mutableStateOf(false) }
   var showFullTime by rememberSaveable { mutableStateOf(false) }
   val appsByPackage = remember(apps) { apps.associateBy { it.packageName } }
+  val logItems = remember(logs) { buildLogListItems(logs) }
   val filtered =
-      remember(logs, query, appsByPackage) {
-        val q = query.trim().lowercase()
-        if (q.isBlank()) logs
-        else
-            logs.filter {
-              val resolvedLabel = appsByPackage[it.packageName]?.label.orEmpty()
-              listOf(
-                      it.label,
-                      resolvedLabel,
-                      it.packageName,
-                      it.processPackage,
-                      it.callerPackage,
-                      it.watchPackage,
-                      it.eventRole,
-                      it.correlationId,
-                      it.observerPackage,
-                      it.observationCount.toString(),
-                      it.operation,
-                      it.operationIntent,
-                      it.action,
-                      it.errorText,
-                      it.path,
-                      it.landingPath,
-                      it.fromPath,
-                      it.backendPath,
-                  )
-                  .any { value -> value.lowercase().contains(q) }
-            }
-      }
-  // 同一批日志里可能存在内容完全相同的条目，按出现次数补一个序号使 key 唯一。
-  // 该序号只取决于条目自身内容，插入新日志不会改变已有条目的 key。
-  val logEntryKeys =
-      remember(filtered) {
-        val seen = HashMap<String, Int>()
-        val keys = HashMap<LogEntry, String>(filtered.size)
-        for (entry in filtered) {
-          val base = entry.contentKey()
-          val ordinal = seen.getOrDefault(base, 0)
-          seen[base] = ordinal + 1
-          keys.putIfAbsent(entry, if (ordinal == 0) base else "$base#$ordinal")
-        }
-        keys
+      remember(logItems, query, appsByPackage) {
+        filterLogListItems(logItems, query, appsByPackage)
       }
   val pullToRefreshState = rememberPullToRefreshState()
   val refreshTexts = listOf("下拉刷新", "释放刷新", "正在刷新", "刷新完成")
@@ -188,15 +149,12 @@ internal fun LogsScreen(
         if (filtered.isEmpty()) {
           item { EmptyText(if (query.isBlank()) "暂无文件操作记录" else "没有匹配的日志") }
         } else {
-          itemsIndexed(
+          items(
               filtered,
-              // key 不能包含列表下标：日志是最新在前，新增一条会让其后所有条目的下标
-              // 位移，等价于全部 key 变化，导致整列表重建、item 内的展开状态丢失、
-              // 复用失效。这里用内容指纹加「同内容第几次出现」的序号，既保证唯一，
-              // 又不受插入位置影响。
-              key = { _, entry -> logEntryKeys[entry] ?: entry.contentKey() },
-              contentType = { _, entry -> if (entry.ok) "success" else "error" },
-          ) { _, entry ->
+              key = { it.key },
+              contentType = { if (it.entry.ok) "success" else "error" },
+          ) { item ->
+            val entry = item.entry
             val app =
                 if (entry.isModuleWebUiExport) null
                 else
@@ -573,10 +531,6 @@ private fun String.parenthesized(): String = if (isBlank()) "" else "（$this）
 
 private fun String.isSinglePackageName(): Boolean =
     all { it.isLetterOrDigit() || it == '_' || it == '.' || it == '-' } && contains('.')
-
-/** 日志条目的内容指纹，用于 LazyColumn 的稳定 key，不含列表位置信息。 */
-private fun LogEntry.contentKey(): String =
-    "$timestamp|$processPackage|$callerPackage|$packageName|$eventRole|$correlationId|$observationCount|$operation|$path|$ok"
 
 private fun String.isIntermediateLogPackage(): Boolean =
     this == "com.google.android.providers.media.module" ||

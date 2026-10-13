@@ -122,6 +122,8 @@ class SrxViewModel(
   private var openAppJob: Job? = null
   private var configSaveJob: Job? = null
   private var logAppsJob: Job? = null
+  private var logRefreshJob: Job? = null
+  private val logRequests = LogRequestGate()
   private var dashboardCountsJob: Job? = null
   private var dashboardCountsRefreshedAt = 0L
   private val monitorFiltersSaveMutex = Mutex()
@@ -764,18 +766,24 @@ class SrxViewModel(
   }
 
   fun refreshLogs() {
-    viewModelScope.launch {
-      updateLogs(LogStateChange.RefreshStarted)
-      runCatching { repository.readLogSnapshot() }
-          .onSuccess { snapshot ->
-            updateLogs(LogStateChange.RefreshSucceeded(snapshot.entries, snapshot.filters))
-            refreshLogAppInfo(snapshot.entries)
-          }
-          .onFailure {
-            updateLogs(LogStateChange.RefreshFailed)
-            showMessage("加载日志失败")
-          }
-    }
+    val request = logRequests.beginRefresh() ?: return
+    logRefreshJob?.cancel()
+    logAppsJob?.cancel()
+    logRefreshJob =
+        viewModelScope.launch {
+          updateLogs(LogStateChange.RefreshStarted)
+          val result = runCatching { repository.readLogSnapshot() }
+          if (!logRequests.isCurrent(request)) return@launch
+          result
+              .onSuccess { snapshot ->
+                updateLogs(LogStateChange.RefreshSucceeded(snapshot.entries, snapshot.filters))
+                refreshLogAppInfo(snapshot.entries, request)
+              }
+              .onFailure {
+                updateLogs(LogStateChange.RefreshFailed)
+                showMessage("加载日志失败")
+              }
+        }
   }
 
   fun refreshFileMonitorFilters() {
@@ -800,7 +808,7 @@ class SrxViewModel(
     }
   }
 
-  private fun refreshLogAppInfo(logs: List<LogEntry>) {
+  private fun refreshLogAppInfo(logs: List<LogEntry>, request: Long) {
     val packages =
         logs
             .flatMap {
@@ -820,6 +828,7 @@ class SrxViewModel(
                 repository.loadInstalledAppsForPackages(packages, _state.value.selectedUser)
               }
               .onSuccess { logApps ->
+                if (!logRequests.isCurrent(request)) return@onSuccess
                 val knownApps = _state.value.apps.associateBy { it.packageName }
                 val merged =
                     (logApps.associateBy { it.packageName } + knownApps).values.sortedBy {
@@ -831,10 +840,14 @@ class SrxViewModel(
   }
 
   fun clearLogs() {
+    val request = logRequests.beginClear() ?: return
+    logRefreshJob?.cancel()
+    logAppsJob?.cancel()
+    updateLogs(LogStateChange.RefreshFailed)
     viewModelScope.launch {
-      val ok = repository.clearLogs()
+      val ok = runCatching { repository.clearLogs() }.getOrDefault(false)
+      if (!logRequests.finishClear(request)) return@launch
       if (ok) {
-        logAppsJob?.cancel()
         updateLogs(LogStateChange.Cleared)
         showMessage("日志已清空")
       } else {

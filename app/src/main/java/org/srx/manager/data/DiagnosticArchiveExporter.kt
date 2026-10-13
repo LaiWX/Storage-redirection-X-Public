@@ -174,11 +174,10 @@ internal class DiagnosticArchiveExporter(
         }
     val source = if (exportKind == "backup") "app_backup" else "app_export"
     val command =
-        "mkdir -p ${shellQuote(LogsDir)} && " +
-            "ts=\$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || toybox date '+%Y-%m-%d %H:%M:%S' 2>/dev/null); " +
-            "printf '%s|%s|%s|OPEN|%s|ret=0|errno=0|identify_method=caller|identify_reliability=high|op=provider_open|op_filter=provider_open:write|source=%s|export_kind=%s\\n' " +
-            "\"\${ts:-unknown}\" ${shellQuote(packageName)} ${shellQuote(packageName)} ${shellQuote(path)} ${shellQuote(source)} ${shellQuote(exportKind)} >> ${shellQuote(FileMonitorLogPath)}; " +
-            "chmod 666 ${shellQuote(FileMonitorLogPath)} 2>/dev/null || true"
+        "ts=\$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || toybox date '+%Y-%m-%d %H:%M:%S' 2>/dev/null); " +
+            "line=\$(printf '%s|%s|%s|OPEN|%s|ret=0|errno=0|identify_method=caller|identify_reliability=high|op=provider_open|op_filter=provider_open:write|source=%s|export_kind=%s' " +
+            "\"\${ts:-unknown}\" ${shellQuote(packageName)} ${shellQuote(packageName)} ${shellQuote(path)} ${shellQuote(source)} ${shellQuote(exportKind)}); " +
+            "${shellQuote(ModuleDir + "/bin/srx_daemon")} monitor-record \"\$line\""
     runCatching { shell.exec(command, timeoutMs = 10_000L) }
   }
 
