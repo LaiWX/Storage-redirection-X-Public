@@ -44,6 +44,8 @@ mod ingest;
 mod inspect;
 #[path = "config/merge.rs"]
 mod merge;
+#[path = "config/monitor_filter.rs"]
+mod monitor_filter;
 #[path = "config/raw_scan.rs"]
 mod raw_scan;
 #[path = "config/source.rs"]

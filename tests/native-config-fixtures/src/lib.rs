@@ -257,3 +257,11 @@ pub fn parse_monitor_filters_from(
     let is_ok = ingest::parse_monitor_filter_config(&mut state, json);
     (is_ok, state.monitor_filters.excluded_paths.clone())
 }
+
+// 复用源头黑名单判定及缓存，避免夹具复制匹配逻辑。
+mod monitor_filter {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../src/config/monitor_filter.rs"
+    ));
+}
